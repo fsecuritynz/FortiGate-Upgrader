@@ -1,5 +1,21 @@
 [
   {
+    "version": "0.12.1",
+    "build": 21,
+    "date": "2026-11-07",
+    "title": "Diff view size controls",
+    "changes": [
+      {
+        "type": "new",
+        "text": "Configuration and before/after diffs have a Maximise button that fills the window (Esc restores it), so long lines don't wrap or get cut off."
+      },
+      {
+        "type": "new",
+        "text": "A− / A+ font-size controls (9-20 px) on both diff views; the size is remembered."
+      }
+    ]
+  },
+  {
     "version": "0.12.0",
     "build": 20,
     "date": "2026-11-07",

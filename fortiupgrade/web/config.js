@@ -123,10 +123,11 @@ async function runDiff(t, st, el) {
   el.innerHTML = `<div class="cmp-head"><div><span class="hint">From</span> <b>${esc(cfgLabel(d.a))}</b></div><span class="arrow">→</span><div><span class="hint">To</span> <b>${esc(cfgLabel(d.b))}</b></div></div>
     <div class="tiles" style="border-bottom:1px solid var(--rule)"><div class="tile ${s.changed ? "warn" : ""}"><div class="n">${s.changed}</div><div class="l">Settings changed</div></div><div class="tile ${s.added ? "good" : ""}"><div class="n">${s.added}</div><div class="l">Added</div></div><div class="tile ${s.removed ? "bad" : ""}"><div class="n">${s.removed}</div><div class="l">Removed</div></div></div>
     ${total ? `<div class="toolbar"><div class="seg" id="dv"><button data-v="split" class="${st.dview === "split" ? "on" : ""}">Side by side</button><button data-v="unified" class="${st.dview === "unified" ? "on" : ""}">Unified</button><button data-v="changes" class="${st.dview === "changes" ? "on" : ""}">Changed settings</button></div>
-      <span class="grow"></span><input id="dq" placeholder="Filter" style="width:200px"><span class="hint">Secrets and certificates are masked; build-stamp lines are ignored.</span></div><div id="dbody"></div>`
+      <span class="grow"></span><span class="vtools"></span><input id="dq" placeholder="Filter" style="width:200px"><span class="hint">Secrets and certificates are masked; build-stamp lines are ignored.</span></div><div id="dbody"></div>`
       : '<div class="empty">The two configurations are identical (ignoring secrets and build stamps).</div>'}`;
   if (!total) return;
   const body = $("#dbody", el);
+  viewTools(el.closest(".panel"), $(".vtools", el));
   const draw = () => {
     const q = ($("#dq", el).value || "").toLowerCase();
     const match = (r) => !q || JSON.stringify(r).toLowerCase().includes(q);
@@ -156,4 +157,25 @@ async function runDiff(t, st, el) {
   $$("#dv button", el).forEach((b) => b.onclick = () => { st.dview = b.dataset.v; $$("#dv button", el).forEach((x) => x.classList.toggle("on", x === b)); draw(); });
   let tmr; $("#dq", el).oninput = () => { clearTimeout(tmr); tmr = setTimeout(draw, 200); };
   draw();
+}
+
+// Maximise and font-size controls for the diff views. The size is remembered per viewer.
+const CODE_FS = { min: 9, max: 20, key: "fu.codeFs" };
+function codeFs() { try { return Number(localStorage.getItem(CODE_FS.key)) || 12; } catch { return 12; } }
+function viewTools(panel, slot) {
+  if (!panel || !slot) return;
+  const apply = (n) => { panel.style.setProperty("--code-fs", n + "px"); $(".fs-n", slot).textContent = n + "px"; try { localStorage.setItem(CODE_FS.key, n); } catch { /* ignore */ } };
+  slot.innerHTML = `<span class="fs-ctl" title="Font size"><button class="small" data-fs="-1" title="Smaller text">A−</button><span class="fs-n hint"></span><button class="small" data-fs="1" title="Larger text">A+</button></span>
+    <button class="small" data-max title="Maximise (Esc to restore)">${icon("maximize")}<span>Maximise</span></button>`;
+  apply(codeFs());
+  $$("[data-fs]", slot).forEach((b) => b.onclick = () => apply(Math.min(CODE_FS.max, Math.max(CODE_FS.min, codeFs() + Number(b.dataset.fs)))));
+  const mb = $("[data-max]", slot);
+  const setMax = (on) => {
+    panel.classList.toggle("maxed", on); document.body.classList.toggle("has-maxed", on);
+    mb.innerHTML = `${icon(on ? "minimize" : "maximize")}<span>${on ? "Restore" : "Maximise"}</span>`;
+    mb.title = on ? "Restore (Esc)" : "Maximise (Esc to restore)";
+    document.onkeydown = on ? (e) => { if (e.key === "Escape" && !$("#modal").open) setMax(false); } : null;
+  };
+  mb.onclick = () => setMax(!panel.classList.contains("maxed"));
+  if (document.body.classList.contains("has-maxed")) setMax(true);   // stay maximised when the view redraws
 }

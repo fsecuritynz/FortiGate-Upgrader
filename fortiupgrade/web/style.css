@@ -395,3 +395,14 @@ table.dsum tr.dim td { color: var(--muted); }
 @media (max-width: 760px) { .sbs-heads { grid-template-columns: 1fr; } }
 table.snaps .fname { font-size: 11px; overflow-wrap: anywhere; }
 .tile.fw { grid-column: span 2; } .tile.fw .n { font-size: 16px; white-space: nowrap; padding-top: 6px; }
+
+/* diff views: font size and maximise */
+.code.diff { font-size: var(--code-fs, 12px); }
+.vtools { display: inline-flex; gap: 6px; align-items: center; }
+.fs-ctl { display: inline-flex; align-items: center; gap: 4px; }
+.fs-ctl .fs-n { min-width: 34px; text-align: center; font-variant-numeric: tabular-nums; }
+.vtools [data-max] svg { width: 14px; height: 14px; }
+.panel.maxed { position: fixed; inset: 0; z-index: 900; margin: 0; border-radius: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--panel, #fff); }
+.panel.maxed > #cfBody, .panel.maxed #dbody { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.panel.maxed .code.diff, .panel.maxed #dbody .tablewrap { flex: 1; min-height: 0; max-height: none !important; }
+body.has-maxed { overflow: hidden; }

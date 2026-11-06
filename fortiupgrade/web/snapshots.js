@@ -124,7 +124,7 @@ async function snapCompare(arg) {
     <div class="panel sbs"><div class="sbs-heads">${head(pre, "a")}${head(post, "b")}</div>
       <div class="toolbar"><div class="seg" id="sbsMode"><button data-f="0" class="${st.full ? "" : "on"}">Changes only</button><button data-f="1" class="${st.full ? "on" : ""}">Full file</button></div>
         <button class="small" id="dPrev">▲ Previous change</button><button class="small" id="dNext">▼ Next change</button><span class="hint" id="dPos"></span>
-        <span class="grow"></span><span class="hint">Matched ignoring clocks, dates and uptimes · secrets masked</span></div>
+        <span class="grow"></span><span class="hint">Matched ignoring clocks, dates and uptimes · secrets masked</span><span class="vtools"></span></div>
       <div class="code diff sbs-body" id="sbsBody">${d.rows.length ? `<table class="split">${d.rows.map((r, i) => {
         if (r.t === "gap") return `<tr class="gap"><td colspan="4">⋯ unchanged lines ⋯</td></tr>`;
         const [ax, bx] = r.t === "chg" ? lineDelta(r.a?.[1], r.b?.[1]) : [r.a ? esc(r.a[1]) : "", r.b ? esc(r.b[1]) : ""];
@@ -133,6 +133,7 @@ async function snapCompare(arg) {
   $$(".sbs-h select", c).forEach((sel) => sel.onchange = () => go("snapshots", { tid: st.tid, a: sel.dataset.side === "a" ? sel.value : st.a, b: sel.dataset.side === "b" ? sel.value : st.b }));
   $$("#sbsMode button", c).forEach((b) => b.onclick = () => { st.full = b.dataset.f === "1"; snapCompare({ tid: st.tid, a: st.a, b: st.b }); });
   const body = $("#sbsBody", c);
+  viewTools($(".panel.sbs", c), $(".sbs .vtools", c));
   // start of each run of changed rows
   const trs = $$("tr[data-i]", body);
   const starts = trs.filter((tr, i) => tr.className !== "same" && (i === 0 || trs[i - 1].className === "same" || tr.previousElementSibling?.classList.contains("gap")));

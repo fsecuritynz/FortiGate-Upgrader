@@ -36,6 +36,7 @@ const ICON = {
   settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
   key: '<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M15 8l2 2"/>',
   plus: '<path d="M12 5v14M5 12h14"/>', edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/>', trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
+  maximize: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>', minimize: '<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>',
   refresh: '<path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/>', upload: '<path d="M12 16V4M7 9l5-5 5 5M4 20h16"/>', folder: '<path d="M3 6h7l2 2h9v11H3z"/>',
   import: '<path d="M12 4v12M7 11l5 5 5-5M4 20h16"/>',
   cloud: '<path d="M7 18h10a4 4 0 0 0 .5-8 6 6 0 0 0-11.5 1.5A3.3 3.3 0 0 0 7 18z"/><path d="M12 11v6M9.5 14.5 12 17l2.5-2.5"/>', play: '<path d="M7 4l12 8-12 8z"/>', check: '<path d="M5 12l5 5L20 7"/>',
@@ -112,6 +113,7 @@ async function jobBadge() {
 }
 function go(page, arg) {
   S.page = page;
+  document.body.classList.remove("has-maxed"); document.onkeydown = null;
   Object.values(S.pollers).forEach(clearInterval); S.pollers = {};
   $$("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.page === page || (page === "device" && a.dataset.page === "devices")));
   ({ dashboard: pDashboard, devices: pDevices, device: pDevice, upgrade: pUpgrade, snapshots: pSnapshots, firmware: pFirmware, notes: pNotes, jobs: pJobs, settings: pSettings, changelog: pChangelog }[page])(arg);
