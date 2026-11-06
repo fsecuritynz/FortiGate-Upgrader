@@ -1,5 +1,33 @@
 [
   {
+    "version": "0.12.0",
+    "build": 20,
+    "date": "2026-11-07",
+    "title": "Before/after comparison view",
+    "changes": [
+      {
+        "type": "new",
+        "text": "Snapshots & Diff lists every collection of every device and sorts by date, hostname, device, collection or firmware (click a column heading), with device, collection-type and text filters."
+      },
+      {
+        "type": "new",
+        "text": "Opening a collection shows it side by side with its partner (an upgrade's before and after collections, otherwise the next collection of the same unit), with changed lines and the changed part of each line highlighted. Changes only or the full file, previous/next change, and before/after pickers."
+      },
+      {
+        "type": "new",
+        "text": "A delta summary tile at the top of the comparison: firmware, critical/warning/informational counts, configuration settings changed, and a table of every check's before and after value. Click a row to jump to that section."
+      },
+      {
+        "type": "new",
+        "text": "The dashboard shows the data folder in its own tile with an Open button."
+      },
+      {
+        "type": "fixed",
+        "text": "The dashboard's device type counts include units saved as Standalone that report FGCP or FGSP HA."
+      }
+    ]
+  },
+  {
     "version": "0.11.1",
     "build": 19,
     "date": "2026-11-06",
@@ -35,7 +63,7 @@
       },
       {
         "type": "new",
-        "text": "Settings \u203a Software updates: installed and latest version, Check now, and a switch for automatic checks. An update badge appears under the version at the bottom left."
+        "text": "Settings › Software updates: installed and latest version, Check now, and a switch for automatic checks. An update badge appears under the version at the bottom left."
       },
       {
         "type": "new",

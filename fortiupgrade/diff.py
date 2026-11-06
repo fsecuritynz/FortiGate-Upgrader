@@ -202,3 +202,60 @@ def diff_snapshots(pre: dict, post: dict, only: set[str] | None = None, include_
         report["config"] = diff_config(pre["config"], post["config"])
     report["checks"].sort(key=lambda e: (_SEV_ORDER.get(e["worst"], 3), e["check"], e["scope"]))
     return report
+
+
+# ------------------------------------------------- side-by-side collection files
+def side_by_side_text(before: str, after: str, context: int | None = None) -> list[dict]:
+    """Split-view rows for two collection (.log) files, matched on normalised text so uptimes,
+    clocks and dates don't count as changes. context=None returns every line."""
+    a_raw, b_raw = (before or "").splitlines(), (after or "").splitlines()
+    a, b = normalise_text(before), normalise_text(after)
+    sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    groups = [sm.get_opcodes()] if context is None else list(sm.get_grouped_opcodes(context))
+    rows: list[dict] = []
+    for group in groups:
+        if rows:
+            rows.append({"t": "gap"})
+        for tag, i1, i2, j1, j2 in group:
+            if tag == "equal":
+                rows += [{"t": "same", "a": [i + 1, a_raw[i]], "b": [j + 1, b_raw[j]]}
+                         for i, j in zip(range(i1, i2), range(j1, j2))]
+            elif tag == "replace":
+                for k in range(max(i2 - i1, j2 - j1)):
+                    ai, bj = i1 + k, j1 + k
+                    rows.append({"t": "chg", "a": [ai + 1, a_raw[ai]] if ai < i2 else None,
+                                 "b": [bj + 1, b_raw[bj]] if bj < j2 else None})
+            elif tag == "delete":
+                rows += [{"t": "del", "a": [i + 1, a_raw[i]], "b": None} for i in range(i1, i2)]
+            else:
+                rows += [{"t": "add", "a": None, "b": [j + 1, b_raw[j]]} for j in range(j1, j2)]
+    return rows
+
+
+def compare_summary(pre: dict, post: dict, report: dict) -> list[dict]:
+    """One row per check and scope: the before/after summary line and the number of deltas by
+    severity, worst first, for the table at the top of the comparison."""
+    pre_s = {(s["check"], s["scope"]): s for s in pre.get("summary") or []}
+    post_s = {(s["check"], s["scope"]): s for s in post.get("summary") or []}
+    by = {(c["check"], c["scope"]): c for c in report["checks"]}
+    keys = list(dict.fromkeys([*pre_s, *post_s]))
+    rows = []
+    for k in keys:
+        c = by.get(k)
+        sev = {CRIT: 0, WARN: 0, INFO: 0}
+        lines = 0
+        if c:
+            for x in c["changes"]:
+                sev[x["severity"]] += 1
+            if c["kind"] == "text" and c.get("diff"):
+                lines = sum(1 for ln in c["diff"].splitlines()[2:] if ln[:1] in "+-")
+        name = (pre_s.get(k) or post_s.get(k))["name"]
+        b, a = pre_s.get(k, {}).get("text"), post_s.get(k, {}).get("text")
+        rows.append({"check": k[0], "scope": k[1], "name": name, "before": b, "after": a,
+                     "critical": sev[CRIT], "warning": sev[WARN], "info": sev[INFO], "lines": lines,
+                     "worst": c["worst"] if c else None,
+                     "status": "missing" if b is None or a is None else
+                               ("changed" if any(sev.values()) or lines or b != a else "same")})
+    order = {CRIT: 0, WARN: 1, INFO: 2, None: 3}
+    rows.sort(key=lambda r: (order[r["worst"]], r["status"] == "same"))
+    return rows

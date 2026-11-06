@@ -142,14 +142,16 @@ async function pDashboard() {
   $("#w").innerHTML = `
     <div class="panel"><div class="ph">Devices</div><div class="pb"><div class="big">${ts.length}</div>
       <div class="row" style="margin-top:6px"><span><span class="dot up"></span> ${up} reachable</span><span><span class="dot down"></span> ${ts.length - up} unreachable</span></div>
-      <div class="hint" style="margin-top:6px">${["standalone", "fgcp", "fgsp"].map((k) => `${ts.filter((t) => t.type === k).length} ${typeName(k)}`).join(" · ")}</div></div></div>
+      <div class="hint" style="margin-top:6px">${["standalone", "fgcp", "fgsp"].map((k) => `${ts.filter((t) => effType(t) === k).length} ${typeName(k)}`).join(" · ")}</div></div></div>
     <div class="panel"><div class="ph">Firmware versions</div><div class="pb">${vers.length ? vers.map(([v, n]) => `<div class="row" style="margin:4px 0"><span style="width:60px"><b>v${esc(v)}</b></span><div class="bar" style="flex:1"><i style="width:${(n / max) * 100}%"></i></div><span>${n}</span></div>`).join("") : '<span class="hint">No reachable devices</span>'}</div></div>
     <div class="panel"><div class="ph">Central management</div><div class="pb"><div class="big">${fmgs.length}</div><div class="hint">managed by FortiManager</div>
       ${fmgs.map((t) => `<div style="margin-top:4px">${badge("FMG", "warn")} ${esc(t.name)} <span class="hint">${esc(inv[t.id].management.fmg)}</span></div>`).join("")}</div></div>
     <div class="panel"><div class="ph">Firmware store</div><div class="pb"><div class="big">${imgs.length}</div><div class="hint">images · ${fmtSize(imgs.reduce((a, i) => a + i.size, 0))}</div>
       <div style="margin-top:6px">${[...new Set(imgs.map((i) => i.version))].slice(0, 8).map((v) => `<span class="chip ver">v${esc(v)}</span>`).join("")}</div></div></div>
-    <div class="hint" style="grid-column:1/-1">Data folder: ${esc(S.meta.data_dir)}</div>
-    <div class="panel" style="grid-column:1/-1"><div class="ph">Active jobs <button class="small" onclick="go('jobs')">All jobs</button></div><div class="pb flush">${active.length ? table(active.map((j) => ({ Job: j.title, Stage: j.stage, Status: j.status, Started: j.created }))) : '<div class="empty">No jobs running</div>'}</div></div>`;
+    <div class="panel"><div class="ph">Data folder <button class="small" id="dfOpen">${icon("folder")}Open</button></div><div class="pb"><div class="mono path">${esc(S.meta.data_dir)}</div>
+      <div class="hint" style="margin-top:6px">Devices, secrets vault, firmware images, collections, configurations, jobs and reports</div></div></div>
+    <div class="panel"><div class="ph">Active jobs <button class="small" onclick="go('jobs')">All jobs</button></div><div class="pb flush">${active.length ? table(active.map((j) => ({ Job: j.title, Stage: j.stage, Status: j.status, Started: j.created }))) : '<div class="empty">No jobs running</div>'}</div></div>`;
+  $("#dfOpen").onclick = () => api("/open-folder", { body: { kind: "data" } }).catch((err) => toast(err.message));
 }
 
 // ---------------------------------------------------------------- devices
@@ -637,34 +639,7 @@ function watchJob(id, el, opts = {}) {
   tick();
 }
 
-// ----------------------------------------------------- snapshots & diff
-async function pSnapshots() {
-  const c = page("Snapshots & Diff", "Pre/post upgrade data collection", `<button id="fold">${icon("folder")}Open folder</button>`);
-  const devId = S.snapDev || S.targets[0]?.id;
-  c.innerHTML = `<div class="panel"><div class="toolbar"><span>Device</span><select id="dev">${S.targets.map((t) => `<option value="${t.id}" ${t.id === devId ? "selected" : ""}>${esc(t.name)}</option>`).join("")}</select>
-      <span class="grow"></span><input id="lbl" value="manual" style="width:120px" title="Label"><button class="primary" id="take">${icon("play")}Collect now</button></div>
-    <div id="sj"></div><div id="list"></div></div><div id="view"></div>`;
-  if (!S.targets.length) { $("#list").innerHTML = '<div class="empty">Add a device first.</div>'; return; }
-  const t = () => S.targets.find((x) => x.id === $("#dev").value);
-  const draw = () => { S.snapDev = t().id; snapList(t(), $("#list")); };
-  $("#dev").onchange = draw;
-  $("#fold").onclick = () => api("/open-folder", { body: { kind: "snapshots", tid: t().id } });
-  $("#take").onclick = async () => { const j = await api(`/targets/${t().id}/snapshot`, { body: { label: $("#lbl").value, member_ids: t().members.map((m) => m.id) } }); watchJob(j.id, $("#sj"), { onDone: draw }); };
-  draw();
-}
-async function snapList(t, el, limit) {
-  let list = await api(`/targets/${t.id}/snapshots`);
-  if (limit) list = list.slice(0, limit);
-  if (!list.length) { el.innerHTML = '<div class="empty">No data collected yet.</div>'; return; }
-  el.innerHTML = `<table><thead><tr><th>Pre</th><th>Post</th><th>File</th><th>Collection</th><th>Firmware</th><th>VDOMs</th><th></th></tr></thead><tbody>${list.map((s) => `<tr>
-    <td><input type="radio" name="pre-${t.id}" value="${esc(s.id)}"></td><td><input type="radio" name="post-${t.id}" value="${esc(s.id)}"></td>
-    <td><b>${esc(s.file || s.id + ".log")}</b></td><td>${esc(s.label)}</td><td><span class="chip ver">v${esc(s.device.version)}</span></td><td>${esc(s.vdoms.join(", "))}</td>
-    <td><button class="small" data-v="${esc(s.id)}">View</button> <button class="small" data-l="${esc(s.id)}">.log</button></td></tr>`).join("")}</tbody></table>
-    <div class="toolbar"><button class="primary" id="cmp-${t.id}">Compare selected pre and post</button><span class="hint">Pick a pre and a post collection.</span></div>`;
-  $(`#cmp-${t.id}`).onclick = () => { const pre = $(`[name=pre-${t.id}]:checked`)?.value, post = $(`[name=post-${t.id}]:checked`)?.value; if (!pre || !post) return toast("Select a pre and a post collection"); diffModal(t.id, pre, post); };
-  $$("[data-v]", el).forEach((b) => b.onclick = () => snapModal(t.id, b.dataset.v));
-  $$("[data-l]", el).forEach((b) => b.onclick = async () => { const txt = await api(`/targets/${t.id}/snapshots/${encodeURIComponent(b.dataset.l)}/log`); modal(b.dataset.l + ".log", `<pre style="max-height:70vh">${esc(txt)}</pre>`); });
-}
+// ----------------------------------------------------- snapshots & diff (list and compare view: snapshots.js)
 async function snapModal(tid, sid) {
   const s = await api(`/targets/${tid}/snapshots/${encodeURIComponent(sid)}`);
   const d = s.meta.device;
@@ -691,7 +666,8 @@ async function diffModal(tid, pre, post) {
   const d = await api(`/targets/${tid}/diff?pre=${encodeURIComponent(pre)}&post=${encodeURIComponent(post)}`);
   const cfg = d.config;
   const desc = changeDesc;
-  modal(`Comparison: ${pre} → ${post}`, `
+  const f = modal(`Comparison: ${pre} → ${post}`, `
+    <div class="row" style="justify-content:flex-end;margin-bottom:6px"><button class="small primary" id="dmSbs">${icon("snapshots")}Open side by side</button></div>
     <div class="row" style="margin-bottom:10px"><span class="chip ver">v${esc(d.pre.device.version)}</span><span>→</span><span class="chip ver">v${esc(d.post.device.version)}</span><span class="hint">${esc(d.pre.device.hostname)}</span></div>
     <div class="totals"><div><b style="color:var(--down)">${d.totals.critical}</b>Critical</div><div><b style="color:var(--warn)">${d.totals.warning}</b>Warning</div><div><b style="color:var(--info)">${d.totals.info}</b>Informational</div>${cfg ? `<div><b>${cfg.summary.removed + cfg.summary.changed}</b>Config removed/changed</div>` : ""}</div>
     ${d.checks.map((c) => `<details class="sec" ${c.worst === "critical" ? "open" : ""}><summary>${sevBadge(c.worst)}<b>${esc(c.name)}</b><span class="hint">${esc(scopeName(c.scope))}${c.before_count !== undefined ? ` · ${c.before_count} → ${c.after_count} entries` : ""}</span></summary><div>
@@ -701,6 +677,7 @@ async function diffModal(tid, pre, post) {
       <details class="sec" open><summary><b>Removed or changed</b><span class="hint">${cfg.summary.removed} removed · ${cfg.summary.changed} changed</span></summary><div>${table(cfg.changes.filter((x) => x.type !== "added").map((x) => ({ Change: x.type === "removed" ? "Removed" : "Changed", Setting: x.path.replace(/ > /g, " › "), Before: x.before, After: x.after ?? "—" })), { empty: "Nothing removed or changed" })}</div></details>
       <details class="sec"><summary><b>Added</b><span class="hint">${cfg.summary.added}</span></summary><div>${table(cfg.changes.filter((x) => x.type === "added").map((x) => ({ Setting: x.path.replace(/ > /g, " › "), Value: x.after })), { empty: "Nothing added" })}</div></details>
       <details class="sec"><summary><b>Unified diff</b></summary><div><pre>${esc(cfg.unified || "(identical)")}</pre></div></details>` : ""}`);
+  $("#dmSbs", f).onclick = () => { $("#modal").close(); go("snapshots", { tid, a: pre, b: post }); };
 }
 
 // ---------------------------------------------------------- firmware store

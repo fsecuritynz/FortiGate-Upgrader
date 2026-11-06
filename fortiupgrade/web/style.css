@@ -367,3 +367,31 @@ tr.dim { opacity: .55; }
 .upd-notes { max-height: 320px; overflow: auto; border: 1px solid var(--rule); border-radius: 4px; padding: 10px 12px; background: var(--panel-head); font-size: 12.5px; line-height: 1.55; }
 .upd-notes .un-h { font-weight: 700; margin: 8px 0 2px; } .upd-notes .un-h:first-child { margin-top: 0; }
 .upd-notes .un-li { padding-left: 8px; }
+
+/* dashboard data folder */
+.widgets .path { overflow-wrap: anywhere; word-break: break-all; font-size: 12px; }
+/* snapshots list */
+table.snaps th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+table.snaps th.sortable:hover { color: var(--accent, var(--info)); }
+table.snaps th.sorted { color: var(--text); }
+table.snaps .sarr { font-size: 10px; margin-left: 4px; color: var(--muted); }
+td.nowrap, .nowrap { white-space: nowrap; }
+td.small { font-size: 12px; }
+/* before/after compare */
+table.dsum td { vertical-align: top; }
+table.dsum td.before { color: var(--down); } table.dsum td.after { color: var(--up); }
+table.dsum tr.dim td { color: var(--muted); }
+.sbs-heads { display: grid; grid-template-columns: 1fr 1fr; border-bottom: 1px solid var(--rule); }
+.sbs-h { padding: 10px 14px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.sbs-h.a { border-right: 1px solid var(--rule); background: #ffebe955; } .sbs-h.b { background: #dafbe155; }
+.sbs-h .sbs-t { font-weight: 700; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; }
+.sbs-h select { max-width: 100%; }
+.sbs-body { max-height: 72vh; }
+.sbs-body table.split td.cx { border-right: 1px solid var(--rule); }
+.diff mark.dl { background: #ff818266; color: inherit; border-radius: 2px; }
+.diff td.new mark.dl { background: #4ac26b66; }
+.diff tr.flash td { outline: 2px solid var(--info); outline-offset: -2px; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .sbs-h.a { background: #3c161855; } :root:not([data-theme="light"]) .sbs-h.b { background: #12351f55; } }
+@media (max-width: 760px) { .sbs-heads { grid-template-columns: 1fr; } }
+table.snaps .fname { font-size: 11px; overflow-wrap: anywhere; }
+.tile.fw { grid-column: span 2; } .tile.fw .n { font-size: 16px; white-space: nowrap; padding-top: 6px; }

@@ -816,3 +816,33 @@ def test_release_notes_tool_matches_version():
     assert r.returncode == 0
     title = sp.run([sys.executable, str(root / "tools" / "release_notes.py"), "--title"], capture_output=True, text=True).stdout
     assert title.strip() == f"FortiGate Upgrader {fortiupgrade.version_string()}"
+
+
+def test_snapshot_list_pairs_and_side_by_side_compare():
+    from fastapi.testclient import TestClient
+
+    from fortiupgrade import server
+    from fortiupgrade.diff import side_by_side_text
+    state = mock.new_state("7.2.10", reboot=1, brk=True)
+    port, srv = serve(state)
+    t = add_target("standalone", [port], name="lab")
+    res = orchestrator.run_upgrade(Job("upgrade", "t"), t, dict(FAST, target_version="7.4.8", source="fortiguard", dry_run=False))
+    pre, post = res["reports"][0]["pre"], res["reports"][0]["post"]
+    srv.should_exit = True
+    c = TestClient(server.app, headers={"x-auth": server.TOKEN})
+    lst = c.get("/api/snapshots").json()
+    by = {s["id"]: s for s in lst}
+    assert by[pre]["pair"] == post and by[post]["pair"] == pre
+    assert by[pre]["hostname"] == "FGT-LAB" and by[pre]["target"] == "lab" and by[post]["version"] == "7.4.8"
+    assert [s["taken_at"] for s in lst] == sorted((s["taken_at"] for s in lst), reverse=True)
+    d = c.get(f"/api/targets/{t['id']}/compare", params={"a": pre, "b": post}).json()
+    bgp = next(r for r in d["summary"] if r["check"] == "bgp")
+    assert bgp["critical"] >= 1 and bgp["status"] == "changed"
+    assert d["summary"][0]["worst"] == "critical"           # worst first
+    assert d["changed_lines"] > 0 and {"gap", "chg"} & {r["t"] for r in d["rows"]}
+    full = c.get(f"/api/targets/{t['id']}/compare", params={"a": pre, "b": post, "full": True}).json()
+    assert "gap" not in {r["t"] for r in full["rows"]} and len(full["rows"]) > len(d["rows"])
+    assert not any("ENC " in (r.get("a") or [0, ""])[1] and "<redacted>" not in r["a"][1] for r in full["rows"])
+    # clocks and uptimes don't count as changes
+    rows = side_by_side_text("up 1d 2h 3m\nA 10:00:00\nx", "up 4d 5h 6m\nA 11:11:11\ny")
+    assert [r["t"] for r in rows] == ["same", "same", "chg"]

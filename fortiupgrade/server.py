@@ -254,6 +254,68 @@ def snapshot_get(tid: str, sid: str):
     return s
 
 
+def _pair_snapshots(snaps: list[dict]) -> None:
+    """Link each pre-upgrade collection to the post-upgrade one that followed it for the same
+    unit (sets "pair" on both). snaps is newest first."""
+    open_pre: dict[str, dict] = {}
+    for s in reversed(snaps):
+        key = s.get("member_id") or ""
+        if s.get("label") == "pre-upgrade":
+            open_pre[key] = s
+        elif s.get("label") == "post-upgrade" and key in open_pre:
+            pre = open_pre.pop(key)
+            pre["pair"], s["pair"] = s["id"], pre["id"]
+
+
+@app.get("/api/snapshots")
+def all_snapshots():
+    """Every data collection of every device, newest first, with its pre/post partner."""
+    out = []
+    names = {}
+    for t in storage.list_targets():
+        names[t["id"]] = t
+        snaps = storage.list_snapshots(t["id"])
+        _pair_snapshots(snaps)
+        member = {m["id"]: (m.get("name") or m["host"]) for m in t.get("members", [])}
+        for s in snaps:
+            d = s.get("device") or {}
+            out.append({"target_id": t["id"], "target": t["name"], "id": s["id"], "file": s.get("file") or s["id"] + ".log",
+                        "label": s.get("label"), "taken_at": s.get("taken_at"), "member_id": s.get("member_id"),
+                        "member": member.get(s.get("member_id"), ""), "hostname": d.get("hostname") or "",
+                        "model": d.get("model") or "", "version": d.get("version") or "", "build": d.get("build"),
+                        "vdoms": s.get("vdoms") or [], "pair": s.get("pair")})
+    return sorted(out, key=lambda x: x["taken_at"] or "", reverse=True)
+
+
+def _snap_log_text(tid: str, sid: str, snap: dict) -> str:
+    from . import logfile
+    from .diff import mask_config
+    p = storage.snapshot_log_path(tid, sid)
+    return mask_config(p.read_text() if p.exists() else logfile.render(snap))
+
+
+@app.get("/api/targets/{tid}/compare")
+def compare(tid: str, a: str, b: str, full: bool = False):
+    """Before/after comparison of two collections: delta summary, structured diff and the two
+    collection files side by side (secrets masked)."""
+    from .diff import compare_summary, side_by_side_text
+    _target(tid)
+    try:
+        pre, post = storage.load_snapshot(tid, a), storage.load_snapshot(tid, b)
+    except (FileNotFoundError, KeyError) as e:
+        raise HTTPException(404, "collection not found") from e
+    d = diff_snapshots(pre, post)
+    rows = side_by_side_text(_snap_log_text(tid, a, pre), _snap_log_text(tid, b, post), None if full else 3)
+    cfg = d.pop("config", None)
+    d["config_summary"] = cfg["summary"] if cfg else None
+    d["config_changes"] = cfg["changes"][:2000] if cfg else []
+    d["summary"] = compare_summary(pre, post, d)
+    d["rows"] = rows
+    d["full"] = full
+    d["changed_lines"] = sum(1 for r in rows if r["t"] in ("chg", "add", "del"))
+    return d
+
+
 @app.get("/api/targets/{tid}/snapshots/{sid}/log", response_class=PlainTextResponse)
 def snapshot_log(tid: str, sid: str):
     return storage.snapshot_log_path(tid, sid).read_text()
