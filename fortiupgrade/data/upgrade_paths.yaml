@@ -1,0 +1,9 @@
+# Local upgrade-path overrides, used when the FortiGate cannot reach FortiGuard.
+# Copy hops from Fortinet's upgrade tool (https://docs.fortinet.com/upgrade-tool)
+# for your model. Each entry is one supported hop; the planner chains them.
+#
+# paths:
+#   - {from: "7.0.12", to: "7.0.17"}
+#   - {from: "7.0.17", to: "7.2.11"}
+#   - {from: "7.2.11", to: "7.4.8"}
+paths: []

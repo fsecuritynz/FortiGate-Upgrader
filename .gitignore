@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.build-venv/
+
+# Build output (packaging/build_mac.sh, build_windows.ps1)
+build/
+dist/
+
+# Local dev data: mock targets, secrets vault, snapshots, logs
+.devdata/
+secrets.json
+secrets.vault
+vault.key
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

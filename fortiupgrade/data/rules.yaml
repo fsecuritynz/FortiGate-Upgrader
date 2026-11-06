@@ -1,0 +1,72 @@
+# Upgrade-impact rules. A rule fires when:
+#   current < introduced_in <= target  (omit introduced_in for "always check")
+#   and every regex in config_all matches the config, and at least one in config_any
+#   (omit either list to skip that condition), and model_regex matches (optional).
+#
+# These seed rules cover well-known changes only. They are NOT a substitute for
+# reading the release notes of every hop. Add your own; the file is reloaded on
+# each analysis. A copy in the app's data folder (Settings) takes precedence.
+rules:
+  - id: ha-upgrade-mode
+    title: "HA 'uninterruptible-upgrade' replaced by 'upgrade-mode'"
+    introduced_in: "7.4.1"
+    severity: info
+    config_any: ['^\s*set mode a-[pa]\b', 'uninterruptible-upgrade']
+    message: >
+      From 7.4.1, 'set uninterruptible-upgrade enable|disable' under 'config system ha'
+      becomes 'set upgrade-mode {simultaneous|uninterruptible|local-only|secondary-only}'.
+      Scripts or FortiManager templates that set the old keyword need updating.
+    reference: "FortiOS 7.4.1 release notes / CLI reference: config system ha"
+
+  - id: sslvpn-tunnel-removed
+    title: "SSL VPN tunnel mode removed"
+    introduced_in: "7.6.3"
+    severity: critical
+    config_all: ['^config vpn ssl settings']
+    config_any: ['set tunnel-ip-pools', 'set tunnel-ipv6-pools', '^\s*set source-interface']
+    message: >
+      FortiOS 7.6.3 removes SSL VPN tunnel mode; remote-access users must move to
+      IPsec (dial-up / FortiClient IPsec) before upgrading. SSL VPN settings may be
+      dropped from the configuration after upgrade.
+    reference: "FortiOS 7.6.3 release notes: Special notices / Changes in default behavior"
+
+  - id: sslvpn-web-agentless
+    title: "SSL VPN web mode renamed to Agentless VPN"
+    introduced_in: "7.6.0"
+    severity: info
+    config_all: ['^config vpn ssl web portal']
+    config_any: ['set web-mode enable']
+    message: >
+      In the 7.6 train SSL VPN web mode is presented as 'Agentless VPN'. Check
+      the release notes of your target build for model-specific availability.
+    reference: "FortiOS 7.6.0 release notes"
+
+  - id: proxy-2gb-models
+    title: "Proxy features removed on 2 GB RAM models"
+    introduced_in: "7.4.4"
+    severity: warning
+    config_any: ['^config web-proxy explicit\n(?s:(?:(?!\nend).)*?)set status enable', '^config wanopt', 'set inspection-mode proxy']
+    message: >
+      From 7.4.4, FortiGate models with 2 GB RAM no longer support proxy-based features
+      (explicit/transparent web proxy, WAN optimisation, proxy-mode inspection, etc.).
+      Confirm the RAM of this model; if it is a 2 GB model these settings will be lost.
+    reference: "FortiOS 7.4.4 release notes: Special notices"
+
+  - id: sdwan-rename
+    title: "virtual-wan-link renamed to sdwan"
+    introduced_in: "6.4.0"
+    severity: warning
+    config_any: ['^config system virtual-wan-link']
+    message: >
+      'config system virtual-wan-link' becomes 'config system sdwan' in 6.4. The config
+      is migrated automatically, but scripts and FortiManager templates must be updated.
+    reference: "FortiOS 6.4.0 release notes"
+
+  - id: weak-admin-tls
+    title: "Legacy TLS allowed on admin GUI"
+    severity: info
+    config_any: ['set admin-https-ssl-versions .*tlsv1-[01]', 'set strong-crypto disable']
+    message: >
+      Newer FortiOS releases progressively remove weak TLS and ciphers. Clients relying
+      on TLS 1.0/1.1 to reach the GUI or API may fail after upgrade.
+    reference: "Release notes: Changes in default behavior"

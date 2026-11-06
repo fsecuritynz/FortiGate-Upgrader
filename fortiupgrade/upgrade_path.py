@@ -1,0 +1,134 @@
+"""Upgrade-path planning.
+
+Sources, in priority order:
+  1. The device's own FortiGuard upgrade-path data
+     (GET /api/v2/monitor/system/firmware/upgrade-paths; needs FortiGuard access).
+  2. A user-maintained override file (data/upgrade_paths.yaml or the user data dir),
+     for air-gapped devices. Fill it from https://docs.fortinet.com/upgrade-tool.
+  3. A conservative fallback that never skips a major.minor train and steps through
+     the newest FortiGuard-available patch of each intermediate train. This is
+     flagged UNVERIFIED in the plan: always confirm it with Fortinet's upgrade tool.
+"""
+from __future__ import annotations
+
+from collections import deque
+from pathlib import Path
+
+import yaml
+
+from .client import FortiAPIError, FortiGateClient
+from .version import FosVersion
+
+DATA = Path(__file__).parent / "data"
+
+
+def _v(x) -> FosVersion | None:
+    try:
+        if isinstance(x, dict):
+            return FosVersion.from_parts(x)
+        return FosVersion.parse(x)
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def parse_edges(raw) -> list[tuple[FosVersion, FosVersion]]:
+    """Accepts the FortiGuard list format ({from:{major,minor,patch}, to:{...}})
+    and simpler {from: "7.0.12", to: "7.2.8"} entries."""
+    edges = []
+    items = raw if isinstance(raw, list) else (raw or {}).get("paths", []) if isinstance(raw, dict) else []
+    for e in items:
+        if not isinstance(e, dict):
+            continue
+        a = _v(e.get("from") or e.get("from_version") or e.get("src"))
+        b = _v(e.get("to") or e.get("to_version") or e.get("dst"))
+        if a and b and b > a:
+            edges.append((a, b))
+    return edges
+
+
+def shortest_path(edges, src: FosVersion, dst: FosVersion) -> list[FosVersion] | None:
+    graph: dict[FosVersion, set[FosVersion]] = {}
+    for a, b in edges:
+        graph.setdefault(a, set()).add(b)
+    q, seen = deque([[src]]), {src}
+    while q:
+        path = q.popleft()
+        if path[-1] == dst:
+            return path
+        # prefer bigger jumps first so BFS ties pick the shortest real path
+        for nxt in sorted(graph.get(path[-1], ()), reverse=True):
+            if nxt not in seen and nxt <= dst:
+                seen.add(nxt)
+                q.append(path + [nxt])
+    return None
+
+
+def load_override_edges(extra_file: Path | None = None):
+    edges = []
+    for f in [DATA / "upgrade_paths.yaml", extra_file]:
+        if f and Path(f).exists():
+            edges += parse_edges((yaml.safe_load(Path(f).read_text()) or {}).get("paths", []))
+    return edges
+
+
+def fallback_path(src: FosVersion, dst: FosVersion, available: list[FosVersion]) -> list[FosVersion]:
+    path = [src]
+    trains = sorted({v.train for v in available if src.train < v.train < dst.train})
+    # also include trains we know must exist between src and dst even if not in FortiGuard list
+    for t in trains:
+        best = max(v for v in available if v.train == t)
+        path.append(best)
+    path.append(dst)
+    return path
+
+
+def plan(client: FortiGateClient | None, current: str, target: str, model: str = "",
+         available: list[str] | None = None, override_file: Path | None = None) -> dict:
+    src, dst = FosVersion.parse(current), FosVersion.parse(target)
+    result = {"current": str(src), "target": str(dst), "model": model, "steps": [], "source": None,
+              "verified": False, "warnings": [], "notes": []}
+    if dst == src:
+        result["warnings"].append("Target equals the running version.")
+        return result
+    if dst < src:
+        result["warnings"].append("Target is older than the running version: this is a DOWNGRADE. "
+                                  "Configuration may be lost; restore a config backup taken on the target build.")
+        result["steps"] = [str(src), str(dst)]
+        result["source"] = "downgrade"
+        return result
+
+    avail = [_v(a) for a in (available or [])]
+    avail = [a for a in avail if a]
+    if client is not None:
+        try:
+            edges = parse_edges(client.upgrade_paths())
+            p = shortest_path(edges, src, dst) if edges else None
+            if p:
+                result.update(steps=[str(v) for v in p], source="fortiguard (device)", verified=True)
+            elif edges:
+                result["warnings"].append("FortiGuard upgrade-path data did not contain a route "
+                                          f"from {src} to {dst}.")
+        except FortiAPIError as e:
+            result["notes"].append(f"Device upgrade-path lookup unavailable: {e}")
+
+    if not result["steps"]:
+        p = shortest_path(load_override_edges(override_file), src, dst)
+        if p:
+            result.update(steps=[str(v) for v in p], source="local override file", verified=True)
+
+    if not result["steps"]:
+        p = fallback_path(src, dst, avail)
+        result.update(steps=[str(v) for v in p], source="fallback (train-by-train)", verified=False)
+        result["warnings"].append("UNVERIFIED path: generated by stepping through each major.minor train. "
+                                  "Confirm against https://docs.fortinet.com/upgrade-tool before upgrading.")
+        if not avail:
+            result["notes"].append("No FortiGuard image list was available, so intermediate trains could "
+                                   "not be filled in. Add hops to the local override file.")
+
+    if avail and dst not in avail:
+        result["notes"].append(f"{dst} is not in this device's FortiGuard image list; it may not be "
+                               "released for this model. Use a local image only if you are sure it is.")
+    steps = [FosVersion.parse(s) for s in result["steps"]]
+    result["hops"] = [{"from": str(a), "to": str(b), "major_jump": a.train != b.train}
+                      for a, b in zip(steps, steps[1:])]
+    return result
