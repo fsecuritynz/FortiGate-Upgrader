@@ -94,6 +94,37 @@ def meta():
             "version": __version__, "build": __build__, "version_string": version_string()}
 
 
+@app.get("/api/update")
+def update_status(refresh: bool = False):
+    from . import updater
+    return updater.check(force=True) if refresh else updater.status()
+
+
+@app.post("/api/update/download")
+def update_download():
+    from . import updater
+    try:
+        return updater.download()
+    except RuntimeError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.post("/api/update/install")
+def update_install():
+    from . import updater
+    try:
+        return updater.install()
+    except RuntimeError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.put("/api/update/prefs")
+def update_prefs(body: dict = Body(...)):
+    from . import updater
+    updater.set_prefs(auto=body.get("auto"), skip=body.get("skip"))
+    return updater.status()
+
+
 @app.get("/api/changelog")
 def changelog():
     return json.loads((Path(__file__).parent / "changelog.json").read_text())
@@ -726,6 +757,17 @@ def update_image(iid: str, body: dict = Body(...)):
 @app.delete("/api/images/{iid}")
 def delete_image(iid: str):
     images.delete(iid)
+    return {"ok": True}
+
+
+@app.post("/api/open-url")
+def open_url(url: str = Body(..., embed=True)):
+    """Open the project's GitHub pages in the default browser (the only URLs allowed)."""
+    from . import updater
+    if not url.startswith(f"https://github.com/{updater.REPO}"):
+        raise HTTPException(400, "only the FortiGate Upgrader GitHub pages can be opened")
+    import webbrowser
+    webbrowser.open(url)
     return {"ok": True}
 
 

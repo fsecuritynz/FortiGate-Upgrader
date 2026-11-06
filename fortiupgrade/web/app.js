@@ -98,6 +98,7 @@ async function boot() {
   await loadTargets();
   go("dashboard");
   setInterval(jobBadge, 4000);
+  updStart();
 }
 window.addEventListener("hashchange", () => location.reload());
 async function loadTargets() { S.targets = await api("/targets"); }
@@ -813,12 +814,14 @@ async function pSettings() {
       <label class="cb" style="display:flex;align-items:flex-start;margin:10px 0"><input type="radio" name="ss" value="file" ${st.secret_store === "file" ? "checked" : ""}>
         <span><b>Local key file</b><br><span class="hint">No ${kc} prompts at all. The key is saved as <code>vault.key</code> next to the vault, readable only by your user account, so anyone who can read your user's files can read the credentials.</span></span></label>
       <div class="row" style="margin-top:12px"><button class="primary" id="ssSave">Apply</button><span class="hint" id="ssMsg"></span></div></div></div>
+      <div id="updSet"></div>
       <div class="panel"><div class="ph"><span class="ttl">Data folder</span><span class="tools"><button class="small" id="fold">${icon("folder")}Open</button></span></div><div class="pb mono">${esc(st.data_dir)}</div></div>`;
     $("#ssSave").onclick = async () => {
       const v = $("[name=ss]:checked")?.value;
       try { const r = await api("/settings", { method: "PUT", body: { secret_store: v } }); draw(r); $("#ssMsg").textContent = "Saved."; } catch (e) { $("#ssMsg").textContent = e.message; }
     };
     $("#fold").onclick = () => api("/open-folder", { body: { kind: "data" } }).catch((e) => toast(e.message));
+    updSettingsPanel($("#updSet"));
   };
   draw(await api("/settings"));
 }

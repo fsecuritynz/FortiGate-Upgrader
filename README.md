@@ -4,6 +4,38 @@ A local desktop app for macOS and Windows that upgrades FortiGate firmware throu
 
 FortiGate Upgrader is an independent tool and is not affiliated with Fortinet.
 
+## Download
+
+Get the latest build from **[Releases](https://github.com/fsecuritynz/FortiGate-Upgrader/releases/latest)**:
+
+| Platform | File |
+|---|---|
+| macOS, Apple silicon | `FortiGate-Upgrader-<version>-macOS-arm64.dmg`: open it and drag the app to Applications |
+| macOS, Intel | `FortiGate-Upgrader-<version>-macOS-x86_64.dmg` (when present) |
+| Windows 10/11 x64 | `FortiGate-Upgrader-<version>-Windows-x64-Setup.exe`: installs for the current user, no admin rights needed |
+
+`SHA256SUMS.txt` in each release lists the files' checksums. The apps aren't code-signed:
+- **macOS:** on first launch, right-click the app and choose Open.
+- **Windows:** SmartScreen may ask you to confirm (More info › Run anyway).
+
+## Updates
+
+The app checks this repository's latest release at start-up and every 6 hours. Only the release list and the download are fetched; nothing about you or your devices is sent. When a newer version is out:
+- **Notice:** a badge appears under the version at the bottom left, and a prompt shows the release notes.
+- **Download and install:** fetches the file for your platform and verifies it against the release's `SHA256SUMS.txt`, refusing a mismatch. The app then closes, updates itself and reopens.
+- **How it installs:** on macOS the app bundle is replaced in place from the disk image; on Windows the installer runs silently.
+- **Settings › Software updates:** shows the installed and latest versions, has **Check now**, and turns automatic checks off.
+
+### Publishing a release
+
+1. Bump `__version__` and `__build__` in `fortiupgrade/__init__.py`, and add the entry at the top of `fortiupgrade/changelog.json`.
+2. Commit, then tag and push: `git tag v0.11.0 && git push origin main v0.11.0`.
+3. The **Release** workflow (`.github/workflows/release.yml`) does the rest:
+   - checks the tag matches the version and the change log
+   - runs the tests
+   - builds the macOS `.dmg` (`packaging/build_mac.sh` + `packaging/make_dmg.sh`) and the Windows installer (`packaging/build_windows.ps1` with Inno Setup, `packaging/installer.iss`)
+   - publishes the Release with checksums and notes taken from the change log
+
 ## Run from source
 
 ```bash

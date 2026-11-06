@@ -1,138 +1,302 @@
 [
   {
-    "version": "0.10.0", "build": 17, "date": "2026-11-06",
+    "version": "0.11.0",
+    "build": 18,
+    "date": "2026-11-06",
+    "title": "Downloads and in-app updates",
+    "changes": [
+      {
+        "type": "new",
+        "text": "Ready-built downloads on GitHub Releases: a macOS disk image (.dmg) and a Windows installer (Setup .exe), with SHA-256 checksums."
+      },
+      {
+        "type": "new",
+        "text": "The app checks GitHub for a newer release at start-up and every 6 hours, and offers to download and install it. The download is verified against the release checksum before installing."
+      },
+      {
+        "type": "new",
+        "text": "Installing an update closes the app, replaces it (macOS) or runs the installer silently (Windows), and reopens it."
+      },
+      {
+        "type": "new",
+        "text": "Settings \u203a Software updates: installed and latest version, Check now, and a switch for automatic checks. An update badge appears under the version at the bottom left."
+      },
+      {
+        "type": "new",
+        "text": "Release builds for macOS and Windows are produced by a GitHub Actions workflow when a version tag is pushed."
+      }
+    ]
+  },
+  {
+    "version": "0.10.0",
+    "build": 17,
+    "date": "2026-11-06",
     "title": "Versioning and change log",
     "changes": [
-      {"type": "new", "text": "The software version and build are shown at the bottom left of the window, as on FortiOS. Click it to open the change log."},
-      {"type": "new", "text": "System > Change log lists every release with its build, date and changes."},
-      {"type": "improved", "text": "The macOS app bundle and the PDF report carry the version and build."}
+      {
+        "type": "new",
+        "text": "The software version and build are shown at the bottom left of the window, as on FortiOS. Click it to open the change log."
+      },
+      {
+        "type": "new",
+        "text": "System > Change log lists every release with its build, date and changes."
+      },
+      {
+        "type": "improved",
+        "text": "The macOS app bundle and the PDF report carry the version and build."
+      }
     ]
   },
   {
-    "version": "0.9.2", "build": 16, "date": "2026-11-06",
+    "version": "0.9.2",
+    "build": 16,
+    "date": "2026-11-06",
     "title": "App icon",
     "changes": [
-      {"type": "new", "text": "The app has its own icon (firewall shield with an upgrade arrow) instead of the Python logo, for macOS (.icns) and Windows (.ico)."}
+      {
+        "type": "new",
+        "text": "The app has its own icon (firewall shield with an upgrade arrow) instead of the Python logo, for macOS (.icns) and Windows (.ico)."
+      }
     ]
   },
   {
-    "version": "0.9.1", "build": 15, "date": "2026-11-06",
+    "version": "0.9.1",
+    "build": 15,
+    "date": "2026-11-06",
     "title": "Per-unit HA addresses for service probes",
     "changes": [
-      {"type": "changed", "text": "Default probes for an HA cluster target each unit's own management-ip or dedicated HA management interface, never the shared cluster address, so each unit's availability is shown separately."},
-      {"type": "new", "text": "A secondary's own address is read from the primary over SSH (execute ha manage, then show system interface) when it isn't saved on the device."},
-      {"type": "new", "text": "The HA cluster panel shows each unit's own address and fills it into Save addresses."}
+      {
+        "type": "changed",
+        "text": "Default probes for an HA cluster target each unit's own management-ip or dedicated HA management interface, never the shared cluster address, so each unit's availability is shown separately."
+      },
+      {
+        "type": "new",
+        "text": "A secondary's own address is read from the primary over SSH (execute ha manage, then show system interface) when it isn't saved on the device."
+      },
+      {
+        "type": "new",
+        "text": "The HA cluster panel shows each unit's own address and fills it into Save addresses."
+      }
     ]
   },
   {
-    "version": "0.9.0", "build": 14, "date": "2026-11-06",
+    "version": "0.9.0",
+    "build": 14,
+    "date": "2026-11-06",
     "title": "HA cluster view and upgrade hardening",
     "changes": [
-      {"type": "new", "text": "HA dashboard shows both units as appliances with the heartbeat link, role, HA priority, serial and cluster settings."},
-      {"type": "new", "text": "Save addresses re-saves a cluster as cluster address plus unit addresses, reusing its API token and SSH login."},
-      {"type": "new", "text": "The upgrade wizard adds probes for every management address automatically, respecting each interface's allowed access and the admin HTTPS port."},
-      {"type": "fixed", "text": "Temporary connection errors (TLS handshake refused, connection reset) on read-only API calls are retried twice instead of failing the upgrade."},
-      {"type": "fixed", "text": "An SSH login that stops at a password-change or disclaimer screen fails within seconds with a clear message, instead of hanging for 100 seconds."},
-      {"type": "changed", "text": "HTTP(S) probes run at most once a second (default every 2 s), so they can't overload the FortiGate's management web server."}
+      {
+        "type": "new",
+        "text": "HA dashboard shows both units as appliances with the heartbeat link, role, HA priority, serial and cluster settings."
+      },
+      {
+        "type": "new",
+        "text": "Save addresses re-saves a cluster as cluster address plus unit addresses, reusing its API token and SSH login."
+      },
+      {
+        "type": "new",
+        "text": "The upgrade wizard adds probes for every management address automatically, respecting each interface's allowed access and the admin HTTPS port."
+      },
+      {
+        "type": "fixed",
+        "text": "Temporary connection errors (TLS handshake refused, connection reset) on read-only API calls are retried twice instead of failing the upgrade."
+      },
+      {
+        "type": "fixed",
+        "text": "An SSH login that stops at a password-change or disclaimer screen fails within seconds with a clear message, instead of hanging for 100 seconds."
+      },
+      {
+        "type": "changed",
+        "text": "HTTP(S) probes run at most once a second (default every 2 s), so they can't overload the FortiGate's management web server."
+      }
     ]
   },
   {
-    "version": "0.8.1", "build": 13, "date": "2026-11-06",
+    "version": "0.8.1",
+    "build": 13,
+    "date": "2026-11-06",
     "title": "HA mode choice and dashboard layout",
     "changes": [
-      {"type": "fixed", "text": "A unit saved as Standalone that reports FGCP or FGSP is upgraded as a cluster, and the wizard asks for its HA upgrade and failover mode."},
-      {"type": "new", "text": "The wizard, device form and README explain the cluster address and per-unit HA management addresses."},
-      {"type": "fixed", "text": "Dashboard panels size to their content; text wraps instead of running past panel edges."}
+      {
+        "type": "fixed",
+        "text": "A unit saved as Standalone that reports FGCP or FGSP is upgraded as a cluster, and the wizard asks for its HA upgrade and failover mode."
+      },
+      {
+        "type": "new",
+        "text": "The wizard, device form and README explain the cluster address and per-unit HA management addresses."
+      },
+      {
+        "type": "fixed",
+        "text": "Dashboard panels size to their content; text wraps instead of running past panel edges."
+      }
     ]
   },
   {
-    "version": "0.8.0", "build": 12, "date": "2026-11-06",
+    "version": "0.8.0",
+    "build": 12,
+    "date": "2026-11-06",
     "title": "Service availability probes",
     "changes": [
-      {"type": "new", "text": "Rapid ping, TCP connect and HTTP(S) probes run during an upgrade and measure each outage window, tagged with the upgrade step that caused it."},
-      {"type": "new", "text": "Live timeline on the Install page, kept in the upgrade history and the PDF report."}
+      {
+        "type": "new",
+        "text": "Rapid ping, TCP connect and HTTP(S) probes run during an upgrade and measure each outage window, tagged with the upgrade step that caused it."
+      },
+      {
+        "type": "new",
+        "text": "Live timeline on the Install page, kept in the upgrade history and the PDF report."
+      }
     ]
   },
   {
-    "version": "0.7.0", "build": 11, "date": "2026-11-06",
+    "version": "0.7.0",
+    "build": 11,
+    "date": "2026-11-06",
     "title": "FortiGate-VM series",
     "changes": [
-      {"type": "new", "text": "The dashboard shows a FortiGate-VM's series (VM01, VM02, VM04 ... VMUL), licence type and vCPU/RAM allowance."}
+      {
+        "type": "new",
+        "text": "The dashboard shows a FortiGate-VM's series (VM01, VM02, VM04 ... VMUL), licence type and vCPU/RAM allowance."
+      }
     ]
   },
   {
-    "version": "0.6.1", "build": 10, "date": "2026-11-05",
+    "version": "0.6.1",
+    "build": 10,
+    "date": "2026-11-05",
     "title": "PDF report and FortiOS 8.0 backup fixes",
     "changes": [
-      {"type": "fixed", "text": "Server errors are logged and shown with their real message; the report retries from the saved job."},
-      {"type": "fixed", "text": "FortiOS 8.0's refusal of unencrypted backups is detected instead of being stored as configuration; the configuration is read over SSH instead."},
-      {"type": "changed", "text": "The macOS build is swapped in atomically and warns when the app is running."}
+      {
+        "type": "fixed",
+        "text": "Server errors are logged and shown with their real message; the report retries from the saved job."
+      },
+      {
+        "type": "fixed",
+        "text": "FortiOS 8.0's refusal of unencrypted backups is detected instead of being stored as configuration; the configuration is read over SSH instead."
+      },
+      {
+        "type": "changed",
+        "text": "The macOS build is swapped in atomically and warns when the app is running."
+      }
     ]
   },
   {
-    "version": "0.6.0", "build": 9, "date": "2026-11-05",
+    "version": "0.6.0",
+    "build": 9,
+    "date": "2026-11-05",
     "title": "PDF upgrade report",
     "changes": [
-      {"type": "new", "text": "The wizard's final screen generates a PDF report: settings, pre-flight, per-device timeline, pre/post checks, diffs, warnings, errors and the activity log."}
+      {
+        "type": "new",
+        "text": "The wizard's final screen generates a PDF report: settings, pre-flight, per-device timeline, pre/post checks, diffs, warnings, errors and the activity log."
+      }
     ]
   },
   {
-    "version": "0.5.1", "build": 8, "date": "2026-11-05",
+    "version": "0.5.1",
+    "build": 8,
+    "date": "2026-11-05",
     "title": "Local image upload fix",
     "changes": [
-      {"type": "fixed", "text": "Local images are uploaded as a file (like the FortiOS GUI), avoiding HTTP 413; base64 is the fallback."},
-      {"type": "fixed", "text": "A failed upgrade shows the stage it failed in."}
+      {
+        "type": "fixed",
+        "text": "Local images are uploaded as a file (like the FortiOS GUI), avoiding HTTP 413; base64 is the fallback."
+      },
+      {
+        "type": "fixed",
+        "text": "A failed upgrade shows the stage it failed in."
+      }
     ]
   },
   {
-    "version": "0.5.0", "build": 7, "date": "2026-11-05",
+    "version": "0.5.0",
+    "build": 7,
+    "date": "2026-11-05",
     "title": "Configuration tab",
     "changes": [
-      {"type": "new", "text": "Device Configuration tab: view any saved configuration, diff two past configurations, or diff the current one against a chosen earlier one."}
+      {
+        "type": "new",
+        "text": "Device Configuration tab: view any saved configuration, diff two past configurations, or diff the current one against a chosen earlier one."
+      }
     ]
   },
   {
-    "version": "0.4.1", "build": 6, "date": "2026-11-05",
+    "version": "0.4.1",
+    "build": 6,
+    "date": "2026-11-05",
     "title": "Image matching",
     "changes": [
-      {"type": "fixed", "text": "Firmware images are matched by model code, so FortiGate-VM and FortiFirewall images are recognised for the right devices."}
+      {
+        "type": "fixed",
+        "text": "Firmware images are matched by model code, so FortiGate-VM and FortiFirewall images are recognised for the right devices."
+      }
     ]
   },
   {
-    "version": "0.4.0", "build": 5, "date": "2026-11-05",
+    "version": "0.4.0",
+    "build": 5,
+    "date": "2026-11-05",
     "title": "Installer-style upgrade wizard",
     "changes": [
-      {"type": "new", "text": "Step-by-step upgrade wizard showing the target image and install method throughout, with Next buttons and warnings instead of typing UPGRADE."},
-      {"type": "new", "text": "Verbose live log in a terminal-style window, including every API and SSH call."}
+      {
+        "type": "new",
+        "text": "Step-by-step upgrade wizard showing the target image and install method throughout, with Next buttons and warnings instead of typing UPGRADE."
+      },
+      {
+        "type": "new",
+        "text": "Verbose live log in a terminal-style window, including every API and SSH call."
+      }
     ]
   },
   {
-    "version": "0.3.0", "build": 4, "date": "2026-11-05",
+    "version": "0.3.0",
+    "build": 4,
+    "date": "2026-11-05",
     "title": "Hardware faceplates",
     "changes": [
-      {"type": "new", "text": "The dashboard draws each model's front panel with its physical ports only (no NPU links)."}
+      {
+        "type": "new",
+        "text": "The dashboard draws each model's front panel with its physical ports only (no NPU links)."
+      }
     ]
   },
   {
-    "version": "0.2.1", "build": 3, "date": "2026-11-04",
+    "version": "0.2.1",
+    "build": 3,
+    "date": "2026-11-04",
     "title": "Keychain prompts",
     "changes": [
-      {"type": "fixed", "text": "Secrets live in one encrypted vault with a single keychain item (or a local key file), ending repeated keychain prompts."}
+      {
+        "type": "fixed",
+        "text": "Secrets live in one encrypted vault with a single keychain item (or a local key file), ending repeated keychain prompts."
+      }
     ]
   },
   {
-    "version": "0.2.0", "build": 2, "date": "2026-11-04",
+    "version": "0.2.0",
+    "build": 2,
+    "date": "2026-11-04",
     "title": "Device dashboard",
     "changes": [
-      {"type": "new", "text": "Per-device dashboard with tabs: system information, current status with compare, known issues, upgrade history and current jobs."},
-      {"type": "changed", "text": "FortiOS-style look; the app is renamed FortiGate Upgrader."}
+      {
+        "type": "new",
+        "text": "Per-device dashboard with tabs: system information, current status with compare, known issues, upgrade history and current jobs."
+      },
+      {
+        "type": "changed",
+        "text": "FortiOS-style look; the app is renamed FortiGate Upgrader."
+      }
     ]
   },
   {
-    "version": "0.1.0", "build": 1, "date": "2026-11-04",
+    "version": "0.1.0",
+    "build": 1,
+    "date": "2026-11-04",
     "title": "First release",
     "changes": [
-      {"type": "new", "text": "Upgrades standalone FortiGates, FGCP and FGSP clusters over the REST API, with pre/post checks and diffs, upgrade path validation, FortiGuard download or local image push, HA upgrade modes, batch upgrades, a firmware store and FortiManager detection."}
+      {
+        "type": "new",
+        "text": "Upgrades standalone FortiGates, FGCP and FGSP clusters over the REST API, with pre/post checks and diffs, upgrade path validation, FortiGuard download or local image push, HA upgrade modes, batch upgrades, a firmware store and FortiManager detection."
+      }
     ]
   }
 ]

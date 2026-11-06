@@ -358,3 +358,12 @@ tr.dim { opacity: .55; }
 .cl-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .cl-list li { display: grid; grid-template-columns: 82px 1fr; gap: 10px; align-items: baseline; }
 .cl-list li .badge { justify-content: center; }
+
+/* software updates */
+.banner.ok { border-color: var(--up); background: var(--up-bg); }
+.nav-ver .nv-upd { margin-top: 6px; display: inline-flex; align-items: center; gap: 5px; background: var(--warn); color: #fff; border-radius: 10px;
+  padding: 1px 8px; font-weight: 600; font-size: 11px; }
+.nav-ver .nv-upd svg { width: 12px; height: 12px; }
+.upd-notes { max-height: 320px; overflow: auto; border: 1px solid var(--rule); border-radius: 4px; padding: 10px 12px; background: var(--panel-head); font-size: 12.5px; line-height: 1.55; }
+.upd-notes .un-h { font-weight: 700; margin: 8px 0 2px; } .upd-notes .un-h:first-child { margin-top: 0; }
+.upd-notes .un-li { padding-left: 8px; }

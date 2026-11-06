@@ -47,6 +47,8 @@ def main():
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
+    from . import updater
+    updater.start_background_checks()
     port = args.port or _free_port()
     threading.Thread(target=_serve, args=(port,), daemon=True).start()
     _wait_port(port)

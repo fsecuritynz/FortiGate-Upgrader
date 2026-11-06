@@ -746,3 +746,73 @@ def test_version_matches_changelog():
     m = cl.get("/api/meta", headers=H).json()
     assert m["version"] == fortiupgrade.__version__ and m["build"] == fortiupgrade.__build__
     assert cl.get("/api/changelog", headers=H).json()[0]["build"] == fortiupgrade.__build__
+
+
+def _fake_release(ver="9.9.0", build=99, payload=b"new-app-bytes", sums=None, key="macOS-arm64"):
+    import hashlib
+    name = f"FortiGate-Upgrader-{ver}-{key}.{'dmg' if key.startswith('macOS') else 'exe'}"
+    base = "https://github.com/fsecuritynz/FortiGate-Upgrader/releases/download/v" + ver
+    sums = sums if sums is not None else f"{hashlib.sha256(payload).hexdigest()}  {name}\n"
+    rel = {"tag_name": f"v{ver}", "name": f"FortiGate Upgrader v{ver} build{build:04d}", "body": "## Notes\n- thing",
+           "published_at": "2026-11-07T00:00:00Z", "html_url": base,
+           "assets": [{"name": name, "size": len(payload), "browser_download_url": f"{base}/{name}"},
+                      {"name": "FortiGate-Upgrader-x-Windows-x64-Setup.exe", "size": 1, "browser_download_url": f"{base}/w.exe"},
+                      {"name": "SHA256SUMS.txt", "size": 10, "browser_download_url": f"{base}/SHA256SUMS.txt"}]}
+    return rel, {f"{base}/{name}": payload, f"{base}/SHA256SUMS.txt": sums.encode()}
+
+
+def test_updater_check_download_verify(monkeypatch):
+    import httpx
+    from fortiupgrade import updater
+    assert updater.vtuple("v0.11.0") > updater.vtuple("0.10.9") and updater.vtuple("1.0.0") > updater.vtuple("0.99.0")
+    rel, files = _fake_release()
+    assets = rel["assets"]
+    assert updater.pick_asset(assets, "macOS-arm64")["name"].endswith("macOS-arm64.dmg")
+    assert updater.pick_asset(assets, "Windows-x64")["name"].endswith("Setup.exe")
+    assert updater.pick_asset(assets, "macOS-x86_64") is None
+
+    def handler(req):
+        if req.url.host == "api.github.com":
+            return httpx.Response(200, json=rel)
+        body = files.get(str(req.url))
+        return httpx.Response(200, content=body) if body is not None else httpx.Response(404)
+    monkeypatch.setattr(updater, "_client", lambda timeout=20: httpx.Client(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(updater, "platform_key", lambda: "macOS-arm64")
+    updater.STATE.update(checked_at=None, latest=None, download=None, error=None)
+    st = updater.check(force=True)
+    assert st["available"] and st["latest"]["version"] == "9.9.0" and st["latest"]["build"] == 99 and st["can_install"]
+    updater.download()
+    for _ in range(50):
+        if updater.STATE["download"]["state"] != "downloading":
+            break
+        time.sleep(0.05)
+    d = updater.STATE["download"]
+    assert d["state"] == "ready", d
+    assert Path(d["path"]).read_bytes() == b"new-app-bytes"
+    # skipping a version hides the prompt but keeps it available in Settings
+    updater.set_prefs(skip="9.9.0")
+    assert updater.status()["skipped"] and updater.status()["available"]
+    # a tampered download is refused and deleted
+    rel2, files2 = _fake_release(ver="9.9.1", payload=b"evil", sums=f"{'0' * 64}  FortiGate-Upgrader-9.9.1-macOS-arm64.dmg\n")
+    rel.clear(); rel.update(rel2); files.clear(); files.update(files2)
+    updater.check(force=True)
+    updater.download()
+    for _ in range(50):
+        if updater.STATE["download"]["state"] != "downloading":
+            break
+        time.sleep(0.05)
+    assert updater.STATE["download"]["state"] == "failed" and "doesn't match" in updater.STATE["download"]["error"]
+    assert not list((storage.data_dir() / "updates").glob("*9.9.1*"))
+    with pytest.raises(RuntimeError):
+        updater.install()
+    updater.STATE.update(checked_at=None, latest=None, download=None, error=None)
+
+
+def test_release_notes_tool_matches_version():
+    import subprocess as sp
+    root = Path(__file__).resolve().parents[1]
+    import fortiupgrade
+    r = sp.run([sys.executable, str(root / "tools" / "release_notes.py"), "--check", f"v{fortiupgrade.__version__}"])
+    assert r.returncode == 0
+    title = sp.run([sys.executable, str(root / "tools" / "release_notes.py"), "--title"], capture_output=True, text=True).stdout
+    assert title.strip() == f"FortiGate Upgrader {fortiupgrade.version_string()}"

@@ -1,0 +1,108 @@
+# Builds the macOS .dmg and the Windows installer for a version tag and publishes them as a
+# GitHub Release with SHA256SUMS.txt. The in-app updater reads the latest release.
+#
+#   1. bump __version__/__build__ in fortiupgrade/__init__.py and add the changelog.json entry
+#   2. git tag v0.11.0 && git push origin v0.11.0
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build, e.g. v0.11.0"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: "${{ env.TAG }}" }
+      - name: Tag matches __version__ and the change log
+        run: python3 tools/release_notes.py --check "$TAG"
+
+  test:
+    needs: check
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: "${{ env.TAG }}" }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      - run: pip install -r requirements.txt pytest
+      - run: python -m pytest -q tests
+        env: { FORTIUPGRADE_OFFLINE: "1", FORTIUPGRADE_NO_KEYRING: "1" }
+
+  macos:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-14, arch: arm64 }
+          - { runner: macos-15-intel, arch: x86_64 }
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.arch == 'x86_64' }}   # Intel runners are being retired by GitHub
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: "${{ env.TAG }}" }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      - name: Build app
+        run: sh packaging/build_mac.sh
+      - name: Disk image
+        run: sh packaging/make_dmg.sh
+      - uses: actions/upload-artifact@v4
+        with: { name: "macos-${{ matrix.arch }}", path: "dist/*.dmg", if-no-files-found: error }
+
+  windows:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: "${{ env.TAG }}" }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+      - name: Build app and installer
+        shell: pwsh
+        run: ./packaging/build_windows.ps1
+      - uses: actions/upload-artifact@v4
+        with: { name: windows, path: "dist/*-Setup.exe", if-no-files-found: error }
+
+  release:
+    needs: [macos, windows]
+    if: ${{ !cancelled() && needs.windows.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: "${{ env.TAG }}" }
+      - uses: actions/download-artifact@v4
+        with: { path: out, merge-multiple: true }
+      - name: Checksums and notes
+        run: |
+          ls -la out
+          test -n "$(ls out/*-macOS-arm64.dmg 2>/dev/null)" || { echo "the Apple silicon build is missing"; exit 1; }
+          (cd out && sha256sum *.dmg *.exe > SHA256SUMS.txt && cat SHA256SUMS.txt)
+          python3 tools/release_notes.py > notes.md
+          python3 tools/release_notes.py --title > title.txt
+      - name: Publish release
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" out/* --clobber
+            gh release edit "$TAG" --title "$(cat title.txt)" --notes-file notes.md
+          else
+            gh release create "$TAG" out/* --title "$(cat title.txt)" --notes-file notes.md --verify-tag
+          fi
