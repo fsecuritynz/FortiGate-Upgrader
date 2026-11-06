@@ -559,15 +559,15 @@ def test_probes_measure_outage_during_batch_upgrade():
 
 def test_probes_on_fgcp_cluster_attribute_failover():
     from fortiupgrade import probes
-    st = mock.new_state("7.4.7", ha="a-p", reboot=1.5, name="ha")
+    st = mock.new_state("7.4.7", ha="a-p", reboot=4.5, name="ha")
     port, srv = serve(st)
     t = add_target("fgcp", [port], name="ha")
-    specs = probes.normalise_all([{"type": "http", "url": f"http://127.0.0.1:{port}/", "interval_ms": 100,
+    specs = probes.normalise_all([{"type": "http", "url": f"http://127.0.0.1:{port}/", "interval_ms": 1000,
                                    "timeout_ms": 400}])
     batch = jobs.start("batch", "b", orchestrator.run_batch, [t],
                        dict(FAST, target_version="7.4.8", source="fortiguard", run_checks=False,
                             pause_after_prechecks=False, ha_modes={"fgcp": "uninterruptible"}, probes=specs,
-                            probe_baseline_s=0.5, probe_settle_s=0.5, probe_min_outage_ms=300))
+                            probe_baseline_s=1.5, probe_settle_s=1.5, probe_min_outage_ms=1500))
     for _ in range(300):
         if batch.status not in ("running", "waiting"):
             break

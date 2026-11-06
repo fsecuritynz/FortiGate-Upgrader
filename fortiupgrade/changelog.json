@@ -1,5 +1,21 @@
 [
   {
+    "version": "0.11.1",
+    "build": 19,
+    "date": "2026-11-06",
+    "title": "First published release",
+    "changes": [
+      {
+        "type": "new",
+        "text": "First release published on GitHub with a macOS disk image and a Windows installer. It includes everything in v0.11.0: in-app update checks, verified downloads and self-install."
+      },
+      {
+        "type": "fixed",
+        "text": "The release build's tests now allow for the 1-second minimum HTTP probe interval, so builds no longer fail by chance."
+      }
+    ]
+  },
+  {
     "version": "0.11.0",
     "build": 18,
     "date": "2026-11-06",
