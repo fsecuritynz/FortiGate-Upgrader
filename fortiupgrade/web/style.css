@@ -406,3 +406,15 @@ table.snaps .fname { font-size: 11px; overflow-wrap: anywhere; }
 .panel.maxed > #cfBody, .panel.maxed #dbody { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .panel.maxed .code.diff, .panel.maxed #dbody .tablewrap { flex: 1; min-height: 0; max-height: none !important; }
 body.has-maxed { overflow: hidden; }
+/* wizard: configuration and log review */
+.rv-dev .ph .tools { margin-left: auto; }
+.rv-cats { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px; }
+.rv-cat { border: 1px solid var(--rule); border-radius: 12px; padding: 2px 10px; font-size: 12px; background: var(--panel-head); }
+.rv-cat.critical { border-color: var(--down); color: var(--down); } .rv-cat.warning { border-color: var(--warn); color: var(--warn); }
+table.rv-t td { vertical-align: top; }
+.rv-d { margin-top: 3px; color: var(--text); font-size: 12.5px; line-height: 1.45; }
+.rv-a { font-size: 12.5px; color: var(--muted); }
+.rv-ev summary { cursor: pointer; font-size: 12px; color: var(--info); margin-top: 4px; }
+.rv-ev pre { margin: 4px 0 0; font-size: 11.5px; white-space: pre-wrap; word-break: break-all; }
+.rv-logs { margin: 0 14px 12px; }
+.rv-samples { font-size: 12px; line-height: 1.45; max-height: 140px; overflow: auto; word-break: break-word; }

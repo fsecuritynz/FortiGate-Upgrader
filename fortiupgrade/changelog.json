@@ -1,5 +1,37 @@
 [
   {
+    "version": "0.13.0",
+    "build": 22,
+    "date": "2026-11-07",
+    "title": "Configuration and log review",
+    "changes": [
+      {
+        "type": "new",
+        "text": "New upgrade wizard step, Config & log review, before pre-flight. It reads each unit's configuration, HA settings, licences, resources and recent event logs (read-only) and lists what could make an HA upgrade fail or cause problems afterwards, with what to do about each."
+      },
+      {
+        "type": "new",
+        "text": "Licensing: security profiles used by enabled policies without a valid licence (antivirus, IPS, web/DNS/video filter, application control, antispam), licences about to expire, no FortiCare contract (critical for FortiGuard downloads) and invalid VM licences."
+      },
+      {
+        "type": "new",
+        "text": "Removed or changed features in the target version (from the built-in and your own rules), and compatibility of FortiAnalyzer, FortiManager, managed FortiSwitch/FortiAP/FortiExtender and EMS."
+      },
+      {
+        "type": "new",
+        "text": "HA: cluster out of sync (which checksums differ), single unit in the cluster, mixed models, session pickup off, override on (extra failover), single heartbeat link, no monitored interfaces, monitored interface set down, no per-unit management address."
+      },
+      {
+        "type": "new",
+        "text": "Logs: recent event logs grouped into problem patterns (conserve mode, crashes, HA sync and heartbeat loss, hardware, disk, interface flapping, routing, VPN, SD-WAN, FortiGuard, configuration errors, failed admin logins) with counts, time range and the latest events. Over SSH it also reads the crash log and the configuration lines FortiOS rejected at the last boot."
+      },
+      {
+        "type": "new",
+        "text": "Critical findings must be acknowledged before continuing. The review is included in the PDF upgrade report."
+      }
+    ]
+  },
+  {
     "version": "0.12.1",
     "build": 21,
     "date": "2026-11-07",

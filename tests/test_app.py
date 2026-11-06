@@ -434,14 +434,18 @@ def test_upgrade_pdf_report(tmp_path):
     pf = jobs.start("preflight", "pf", lambda job: {"results": [
         {"target": t["name"], "target_id": t["id"], "status": "done", "result": orchestrator.preflight(job, t, "7.4.8")}
         for t in ts]})
+    from fortiupgrade import review
+    rv = jobs.start("review", "rv", lambda job: {"results": [
+        {"target": t["name"], "target_id": t["id"], "status": "done", "result": review.review_target(job, t, "7.4.8")}
+        for t in ts]})
     for _ in range(100):
-        if pf.status != "running":
+        if pf.status != "running" and rv.status != "running":
             break
         time.sleep(0.1)
     batch = jobs.start("batch", "Upgrade 2 device(s) to 7.4.8", orchestrator.run_batch, ts,
                        dict(FAST, target_version="7.4.8", source="fortiguard", run_checks=True, pause_after_prechecks=False),
                        target_ids=[t["id"] for t in ts], meta={"target_version": "7.4.8", "source": "fortiguard",
-                                                              "preflight_job": pf.id, "run_checks": True})
+                                                              "preflight_job": pf.id, "review_job": rv.id, "run_checks": True})
     for _ in range(400):
         if batch.status not in ("running", "waiting"):
             break
@@ -455,7 +459,7 @@ def test_upgrade_pdf_report(tmp_path):
     assert len(pdf.pages) >= 5
     for want in ("FortiGate Upgrade Report", "Download from FortiGuard", "Pre-flight", "fw0", "fw1", "Timeline",
                  "Pre / post checks", "Check differences", "Configuration differences", "Activity log",
-                 "BGP neighbours", "Established", "Idle"):
+                 "BGP neighbours", "Established", "Idle", "Configuration and log review", "Logs: m0"):
         assert want in text, want
     for _, srv in srvs:
         srv.should_exit = True
@@ -846,3 +850,57 @@ def test_snapshot_list_pairs_and_side_by_side_compare():
     # clocks and uptimes don't count as changes
     rows = side_by_side_text("up 1d 2h 3m\nA 10:00:00\nx", "up 4d 5h 6m\nA 11:11:11\ny")
     assert [r["t"] for r in rows] == ["same", "same", "chg"]
+
+
+def test_review_finds_ha_licence_and_log_problems():
+    from fortiupgrade import review
+    state = mock.new_state("7.4.8", ha="a-p")
+    state["unlicensed"] = ["antivirus", "forticare"]
+    state["extra_events"] = mock.BAD_EVENTS
+    state["ha_cfg"]["session-pickup"] = "disable"
+    state["ha_cfg"]["override"] = "enable"
+    port, srv = serve(state)
+    t = add_target("fgcp", [port], name="cl")
+    res = review.review_target(Job("review", "t"), t, "7.6.4", "fortiguard")
+    srv.should_exit = True
+    ids = {f["id"]: f for f in res["findings"]}
+    assert ids["lic-antivirus-av-profile"]["severity"] == "warning" and "policy 1" in ids["lic-antivirus-av-profile"]["evidence"]
+    assert "lic-web_filtering-webfilter-profile" not in ids               # web filtering is licensed
+    assert ids["lic-forticare"]["severity"] == "critical"                  # FortiGuard download needs FortiCare
+    assert {"ha-session-pickup", "ha-override", "ha-hbdev"} <= ids.keys()
+    assert "rule-sslvpn-tunnel-removed" in ids                             # 7.6.3 removed SSL VPN tunnel mode
+    assert ids["log-conserve"]["severity"] == "critical" and ids["log-crash"]["severity"] == "critical"
+    assert "log-ha-hb" in ids and "log-disk" in ids
+    assert res["logs"][0]["read"] >= 10
+    assert [f["severity"] for f in res["findings"]] == sorted((f["severity"] for f in res["findings"]),
+                                                               key=review.SEV_ORDER.get)
+    assert res["totals"]["critical"] >= 3
+
+
+def test_review_clean_standalone_and_parsers():
+    from fortiupgrade import review
+    state = mock.new_state("7.4.8")
+    port, srv = serve(state)
+    t = add_target("standalone", [port])
+    res = review.review_target(Job("review", "t"), t, "7.4.8", "store")
+    srv.should_exit = True
+    assert res["totals"]["critical"] == 0 and not any(f["category"] == "HA" for f in res["findings"])
+    cfg = 'config firewall policy\n    edit 7\n        set status disable\n        set av-profile "x"\n    next\n    edit 8\n' \
+          '        set ips-sensor "y"\n        config x\n            set a b\n        end\n    next\nend\n' \
+          'config system password-policy\n    set status enable\n    set expire-status enable\nend\n'
+    es = review.entries(cfg, "firewall policy")
+    assert [e["_name"] for e in es] == ["7", "8"] and es[1]["ips-sensor"] == '"y"' and "set a b" in es[1]["_sub"]
+    assert review.settings(cfg, "system password-policy")["expire-status"] == "enable"
+    f = review.review_config(cfg, {"ips": {"status": "expired"}, "antivirus": {"status": "no_license"}}, {}, "FortiGate-60F",
+                             "7.4.8", "7.4.8", [], "standalone", "store")
+    ids = {x["id"] for x in f}
+    assert "lic-ips-ips-sensor" in ids and "lic-antivirus-av-profile" not in ids  # the AV policy is disabled
+    assert "cfg-password" in ids
+    assert review.config_error_lines('>>> "set foo bar" @ root.firewall.policy.3:command parse error before \'foo\'\nFGT # ') \
+        == ['>>> "set foo bar" @ root.firewall.policy.3:command parse error before \'foo\'']
+    import datetime as _dt
+    d = (_dt.datetime.now() - _dt.timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
+    crash = f"1: {d} the killed daemon is /bin/ipsengine: status=0x0\n2: 2001-01-01 00:00:00 application wad crashed\n3: {d} firmware upgraded by admin"
+    assert len(review.parse_crashlog(crash)) == 1
+    la = review.analyse_logs([{"level": "warning", "logdesc": "Link monitor", "msg": "Link monitor: interface port5 was turned down", "date": "2026-11-07", "time": f"10:0{i}:00"} for i in range(4)])
+    assert la["groups"][0]["title"].startswith("Interface flapping: port5")

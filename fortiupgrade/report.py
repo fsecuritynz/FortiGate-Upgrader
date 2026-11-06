@@ -114,6 +114,7 @@ def _build(job_id: str, out: Path | None, include_api_trace: bool) -> Path:
     if not kids and batch.get("kind") == "upgrade":
         kids = [batch]
     pf = _job(meta["preflight_job"]) if meta.get("preflight_job") else None
+    rv = _job(meta["review_job"]) if meta.get("review_job") else None
     targets = {t["id"]: t for t in storage.list_targets()}
     when = dt.datetime.fromisoformat(batch.get("created") or dt.datetime.now().isoformat())
     names = [k.get("title", "") for k in kids]
@@ -203,6 +204,32 @@ def _build(job_id: str, out: Path | None, include_api_trace: bool) -> Path:
                 rr = [[h["severity"].title(), h["title"], h.get("message", "")] for h in an.get("rule_hits") or []]
                 rr += [[h["severity"].title(), f"{h['source']} · {h['section']} · {h['term']}", h["text"]] for h in hits[:60]]
                 story.append(_table(["Severity", "Topic", "Detail"], rr, [W * 0.08, W * 0.22, W * 0.7], sev_col=0))
+
+    # --------------------------------------------- configuration and log review
+    if rv and rv.get("result"):
+        story += [PageBreak(), Paragraph("Configuration and log review", ST["h1"]),
+                  Paragraph("Read-only review of the configuration, HA settings, licences, resources and recent event "
+                            "logs for anything that could make the upgrade fail or cause problems afterwards.", ST["p"])]
+        for it in rv["result"].get("results") or []:
+            res = it.get("result") or {}
+            story.append(Paragraph(escape(it.get("target", "")), ST["h2"]))
+            if not res:
+                story.append(Paragraph(f"Review failed: {escape(str(it.get('error')))}", ST["p"]))
+                continue
+            f = res.get("findings") or []
+            story.append(_table(["Severity", "Area", "Finding", "What to do"],
+                                [[x["severity"].title(), x["category"], f"{x['title']}. {x.get('detail') or ''}".strip(), x.get("advice") or ""]
+                                 for x in f] or [["—", "—", "Nothing found", ""]],
+                                [W * 0.09, W * 0.14, W * 0.47, W * 0.30], sev_col=0))
+            for lg in res.get("logs") or []:
+                story.append(Paragraph(f"Logs: {escape(lg.get('member', ''))} ({lg.get('read', 0)} events"
+                                       f"{', ' + escape(str(lg.get('oldest'))) + ' to ' + escape(str(lg.get('newest'))) if lg.get('read') else ''})", ST["h3"]))
+                gs = lg.get("groups") or []
+                story.append(_table(["Severity", "Pattern", "Events", "Latest"],
+                                    [[g["severity"].title(), g["title"], str(g["count"]),
+                                      (g["samples"][0]["time"] + " " + g["samples"][0]["msg"]) if g.get("samples") else ""] for g in gs]
+                                    or [["—", "No problem patterns found", "", ""]],
+                                    [W * 0.09, W * 0.33, W * 0.08, W * 0.50], sev_col=0))
 
     # ------------------------------------------------------------ per device
     for k in kids:

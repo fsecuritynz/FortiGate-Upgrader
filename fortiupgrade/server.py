@@ -551,6 +551,30 @@ def preflight_many(body: dict = Body(...)):
                       target_ids=[t["id"] for t in targets], meta={"target_version": tv}).to_dict()
 
 
+@app.post("/api/review")
+def review_many(body: dict = Body(...)):
+    """Upgrade-readiness review of the configuration, HA, licences, resources and logs (read-only)."""
+    from . import review
+    targets = [_target(i) for i in body.get("target_ids") or []]
+    if not targets or not body.get("target_version"):
+        raise HTTPException(400, "select devices and a target version")
+    tv, src = body["target_version"], body.get("source") or "fortiguard"
+
+    def run(job):
+        job.label = "review"
+        kids = [jobs.start("review", t["name"], review.review_target, t, tv, src, body.get("ha_modes"), parent=job,
+                           target_id=t["id"]) for t in targets]
+        job.set_stage("Reviewing")
+        while any(k.status == "running" for k in kids):
+            job.check_cancel()
+            time.sleep(0.5)
+        return {"results": [{"job": k.id, "target_id": k.target_id, "target": k.title, "status": k.status,
+                             "error": k.error, "result": k.result} for k in kids]}
+
+    return jobs.start("review", f"Configuration and log review {len(targets)} device(s) → {tv}", run,
+                      target_ids=[t["id"] for t in targets], meta={"target_version": tv}).to_dict()
+
+
 @app.post("/api/upgrade")
 def upgrade(body: dict = Body(...)):
     """Upgrade one or many targets simultaneously."""
@@ -571,7 +595,7 @@ def upgrade(body: dict = Body(...)):
                       meta={"target_version": body["target_version"], "dry_run": bool(body.get("dry_run")),
                             "source": body.get("source", "fortiguard"), "direct": bool(body.get("direct")),
                             "ha_modes": body.get("ha_modes") or {}, "run_checks": body.get("run_checks", True),
-                            "preflight_job": body.get("preflight_job"),
+                            "preflight_job": body.get("preflight_job"), "review_job": body.get("review_job"),
                             "probes": len(body.get("probes") or [])}).to_dict()
 
 

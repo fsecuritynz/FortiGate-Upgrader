@@ -44,6 +44,17 @@ end
         set ip 198.51.100.1 255.255.255.0
     next
 end
+config firewall policy
+    edit 1
+        set name "lan-out"
+        set srcintf "port1"
+        set dstintf "port3"
+        set action accept
+        set utm-status enable
+        set av-profile "default"
+        set webfilter-profile "default"
+    next
+end
 config vpn ssl settings
     set tunnel-ip-pools "SSLVPN_TUNNEL_ADDR1"
     set source-interface "port1"
@@ -252,7 +263,9 @@ def make_app(state: dict) -> FastAPI:
         t0 = state.setdefault("t0", time.time() - 3600)
         out = []
         for i, (subtype, lvl, desc, msg) in enumerate(base):
-            ts = t0 + i * 600 if i < 4 else time.time() - 60 + i
+            if subtype != sub:  # FortiOS returns only the requested subtype
+                continue
+            ts = t0 + i * 600 if i < 4 else state.setdefault("ev_t", {}).setdefault(i, time.time() - 60 + i)
             out.append({"date": time.strftime("%Y-%m-%d", time.localtime(ts)), "time": time.strftime("%H:%M:%S", time.localtime(ts)),
                         "eventtime": int(ts * 1e9), "logid": f"01000{i:05d}", "type": "event", "subtype": subtype,
                         "level": lvl, "logdesc": desc, "msg": msg, "user": "admin" if "Admin" in desc else None})
@@ -314,12 +327,13 @@ def make_app(state: dict) -> FastAPI:
     @app.get("/api/v2/monitor/license/status")
     def lic():
         exp = int(time.time()) + 200 * 86400
-        return wrap({"forticare": {"status": "registered"}, "antivirus": {"status": "licensed", "expires": exp},
+        off = set(state.get("unlicensed") or [])
+        return wrap({k: ({"status": "expired" if k == "forticare" else "no_license"} if k in off else v) for k, v in {"forticare": {"status": "registered"}, "antivirus": {"status": "licensed", "expires": exp},
                      "ips": {"status": "licensed", "expires": exp}, "web_filtering": {"status": "licensed", "expires": exp},
                      "appctrl": {"status": "licensed", "expires": exp}, "sdwan_network_monitor": {"status": "no_license"},
                      "forticloud_logging": {"status": "free_license"},
                      **({"vm": {"status": "vm_valid", "type": "subscription"}}
-                        if str(state.get("model") or "").upper().startswith("VM") else {})})
+                        if str(state.get("model") or "").upper().startswith("VM") else {})}.items()})
 
     @app.get("/api/v2/monitor/system/vm-information")
     def vminfo():
@@ -410,6 +424,16 @@ def make_app(state: dict) -> FastAPI:
     return app
 
 
+BAD_EVENTS = [
+    ("system", "critical", "Conserve mode", "Kernel enters memory conserve mode"),
+    ("system", "critical", "Application crashed", "Application ipsengine crashed (signal 11)"),
+    ("system", "critical", "Application crashed", "Application wad crashed (signal 6)"),
+    ("ha", "warning", "HA heartbeat lost", "Heartbeat packet lost on ha interface"),
+    ("ha", "warning", "HA member state changed", "Member FGT60FTK00000002 state changed from secondary to primary"),
+    ("system", "error", "Disk error", "Disk scan found file system errors on /var/log"),
+]
+
+
 def new_state(version="7.2.10", ha="standalone", vdom=False, fgsp=False, name="FGT-LAB", serial="FGT60FTK00000001",
               reboot=5.0, brk=False, fmg=""):
     ha_cfg = {"mode": ha, "group-name": "lab", "group-id": 21, "override": "disable", "priority": 200,
@@ -438,6 +462,8 @@ if __name__ == "__main__":
     ap.add_argument("--model", default=None, help="e.g. 60F, 90G, 100F, 200F, VM64")
     ap.add_argument("--if-extra", default="", help='JSON per-interface overrides, e.g. {"port1": {"management-ip": "..."}}')
     ap.add_argument("--priority", type=int, default=200)
+    ap.add_argument("--unlicensed", default="", help="comma-separated licence keys to report as not licensed, e.g. antivirus,forticare")
+    ap.add_argument("--bad-logs", action="store_true", help="add conserve-mode, crash and HA heartbeat events to the logs")
     a = ap.parse_args()
     st = new_state(a.version, a.ha, a.vdom, a.fgsp, a.name, a.serial, a.reboot_seconds, a.brk, a.fmg)
     st["model"] = a.model
@@ -445,6 +471,9 @@ if __name__ == "__main__":
         import json as _json
         st["if_extra"] = _json.loads(a.if_extra)
     st["ha_cfg"]["priority"] = a.priority
+    st["unlicensed"] = [x for x in a.unlicensed.split(",") if x]
+    if a.bad_logs:
+        st["extra_events"] = BAD_EVENTS
     if (a.model or "").upper().startswith("VM"):
         st["ha_cfg"]["hbdev"] = '"port2" 50 '
     uvicorn.run(make_app(st), host="127.0.0.1", port=a.port, log_level="warning")

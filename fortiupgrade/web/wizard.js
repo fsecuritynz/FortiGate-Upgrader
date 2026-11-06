@@ -65,11 +65,11 @@ function streamJob(id, con, onTick) {
 }
 
 // ------------------------------------------------------------------- wizard
-const WSTEPS = [["devices", "Devices"], ["image", "Target image"], ["method", "Install method"], ["options", "Options"], ["review", "Pre-flight & review"], ["install", "Install"]];
+const WSTEPS = [["devices", "Devices"], ["image", "Target image"], ["method", "Install method"], ["options", "Options"], ["health", "Config & log review"], ["review", "Pre-flight & review"], ["install", "Install"]];
 function newWizard() {
   return { step: 0, sel: new Set(S.upSel || []), version: "", build: null, maturity: null, source: "fortiguard", path: "fortinet",
     fw: {}, ha: { fgcp: "uninterruptible", fgsp: "uninterruptible" }, units: {}, checks: true, pause: false, restore: true,
-    unverified: false, wait: 1800, par: 4, checkIds: null, pf: null, pfJob: null, fmgAck: false, critAck: false, job: null, dry: false };
+    unverified: false, wait: 1800, par: 4, checkIds: null, pf: null, pfJob: null, fmgAck: false, critAck: false, job: null, dry: false, rv: null, rvJob: null, rvAck: false };
 }
 async function pUpgrade() {
   if (!S.wiz || S.wiz.done) S.wiz = newWizard();
@@ -93,7 +93,7 @@ async function wLoadMatch(ts) {
 }
 function drawWizard(c) {
   const W = S.wiz;
-  const running = W.job && W.step === 5;
+  const running = W.job && W.step === 6;
   const target = W.version ? `FortiOS v${esc(W.version)}${W.build ? ` <span class="hint">build ${esc(W.build)}</span>` : ""}${W.maturity ? ` ${W.maturity === "M" ? badge("Mature", "up") : badge("Feature", "grey")}` : ""}` : '<span class="muted">not chosen</span>';
   const method = W.source === "fortiguard" ? `${icon("cloud")} FortiGuard download` : `${icon("upload")} Push local image`;
   c.innerHTML = `<div class="wiz">
@@ -115,7 +115,7 @@ function drawWizard(c) {
     if (back) $("#wBack").onclick = () => { W.step--; drawWizard(c); };
   };
   const go_ = (n) => { W.step = n; drawWizard(c); };
-  ({ 0: wDevices, 1: wImage, 2: wMethod, 3: wOptions, 4: wReview, 5: wInstall }[W.step])(W, body, foot, nav, go_, c);
+  ({ 0: wDevices, 1: wImage, 2: wMethod, 3: wOptions, 4: wHealth, 5: wReview, 6: wInstall }[W.step])(W, body, foot, nav, go_, c);
   void running;
 }
 
@@ -268,6 +268,7 @@ function wOptions(W, body, foot, nav, go_) {
     const lo = [...(W.ha.fgcp === "local-only" ? fgcp : []), ...(W.ha.fgsp === "local-only" ? fgsp : [])];
     if (lo.some((t) => !(W.units[t.id] || []).length)) return toast("Select the units to upgrade for local-only mode.");
     const pe = probeValidate(W); if (pe) return toast(pe);
+    if (W.rv && W.rvKey !== rvKey(W)) { W.rv = null; W.rvAck = false; }
     go_(4);
   };
 }
@@ -276,7 +277,7 @@ function wBody(W, dry) {
   return { target_ids: [...W.sel], target_version: W.version, source: W.source, direct: W.path === "direct", ha_modes: { fgcp: W.ha.fgcp, fgsp: W.ha.fgsp },
     member_ids: W.units, dry_run: dry, run_checks: W.checks, pause_after_prechecks: W.pause, stop_on_critical: true, approve_between_hops: false,
     approve_between_members: W.pause, restore_ha_setting: W.restore, allow_unverified_path: W.unverified, wait_timeout: W.wait, max_parallel_uploads: W.par,
-    check_ids: W.checkIds, fmg_acknowledged: W.fmgAck, preflight_job: W.pfJob,
+    check_ids: W.checkIds, fmg_acknowledged: W.fmgAck, preflight_job: W.pfJob, review_job: W.rvJob,
     probes: probeSpecs(W), probe_baseline_s: W.probeOpts?.baseline ?? 15, probe_settle_s: W.probeOpts?.settle ?? 60,
     probe_min_outage_ms: W.probeOpts?.minOutage ?? 1000 };
 }
@@ -323,10 +324,10 @@ function wReview(W, body, foot, nav, go_, c) {
   const fa = $("#fmgAck"); if (fa) fa.onchange = () => { W.fmgAck = fa.checked; gate(); };
   const ca = $("#critAck"); if (ca) ca.onchange = () => { W.critAck = ca.checked; gate(); };
   gate();
-  const start = async (dry) => { W.dry = dry; try { const j = await api("/upgrade", { body: wBody(W, dry) }); W.job = j.id; go_(5); } catch (e) { toast(e.message); } };
+  const start = async (dry) => { W.dry = dry; try { const j = await api("/upgrade", { body: wBody(W, dry) }); W.job = j.id; go_(6); } catch (e) { toast(e.message); } };
   nb.onclick = () => start(false);
   $("#wSim").onclick = () => start(true);
-  $("#wBack").onclick = () => { W.pf = null; W.step = 3; drawWizard(c); };
+  $("#wBack").onclick = () => { W.pf = null; W.step = 4; drawWizard(c); };
 }
 
 function wInstall(W, body, foot, nav, go_, c) {
