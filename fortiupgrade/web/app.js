@@ -37,6 +37,7 @@ const ICON = {
   key: '<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M15 8l2 2"/>',
   plus: '<path d="M12 5v14M5 12h14"/>', edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/>', trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
   maximize: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>', minimize: '<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>',
+  eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
   refresh: '<path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/>', upload: '<path d="M12 16V4M7 9l5-5 5 5M4 20h16"/>', folder: '<path d="M3 6h7l2 2h9v11H3z"/>',
   import: '<path d="M12 4v12M7 11l5 5 5-5M4 20h16"/>',
   cloud: '<path d="M7 18h10a4 4 0 0 0 .5-8 6 6 0 0 0-11.5 1.5A3.3 3.3 0 0 0 7 18z"/><path d="M12 11v6M9.5 14.5 12 17l2.5-2.5"/>', play: '<path d="M7 4l12 8-12 8z"/>', check: '<path d="M5 12l5 5L20 7"/>',
@@ -204,19 +205,31 @@ function importCsv() {
   };
 }
 
-function memberRow(m = {}, i = 0, type = "standalone") {
+function memberRow(m = {}, i = 0, type = "standalone", tid = "") {
   const hint = type === "fgcp" ? (i === 0 ? "Cluster address (shared, follows the primary)" : `Unit ${i + 1}: dedicated HA management address (optional)`) : type === "fgsp" ? `FGSP peer ${i + 1}: its own management address` : "Device";
   return `<div class="member"><div class="row" style="justify-content:space-between"><b>${hint}</b>${i > 0 ? '<button type="button" class="small" data-rm>Remove</button>' : ""}</div>
     <div class="grid" style="margin-top:6px">
       <div class="field">Name<input name="name" value="${esc(m.name || "")}" placeholder="fw01"></div>
       <div class="field">IP / FQDN<input name="host" value="${esc(m.host || "")}" required></div>
       <div class="field">HTTPS port<input name="port" type="number" value="${esc(m.port || 443)}"></div>
-      <div class="field">REST API token ${m.has_token ? "(stored — blank keeps it)" : ""}<input name="token" type="password" autocomplete="off"></div>
+      <div class="field">REST API token ${m.has_token ? "(stored — blank keeps it)" : ""}<div class="tok-in"><input name="token" type="password" autocomplete="off">${m.has_token && tid && m.id ? `<button type="button" class="small" data-showtok="${esc(tid)}|${esc(m.id)}" title="Show the stored token">${icon("eye")}Show</button>` : ""}</div><div class="tok-show" hidden></div></div>
       <div class="field">SSH user (optional)<input name="ssh_user" value="${esc(m.ssh_user || "")}"></div>
       <div class="field">SSH password ${m.has_ssh ? "(stored)" : ""}<input name="ssh_password" type="password" autocomplete="off"></div>
       <div class="field">SSH port<input name="ssh_port" type="number" value="${esc(m.ssh_port || 22)}"></div>
       <div class="field">Protocol<select name="scheme"><option ${m.scheme !== "http" ? "selected" : ""}>https</option><option ${m.scheme === "http" ? "selected" : ""}>http</option></select></div>
     </div><label class="cb"><input type="checkbox" name="verify_ssl" ${m.verify_ssl ? "checked" : ""}> Verify TLS certificate</label></div>`;
+}
+// Show the stored API token under the field for 60 s, with Copy and Hide.
+async function showToken(btn) {
+  const box = btn.closest(".field").querySelector(".tok-show");
+  if (!box.hidden) { box.hidden = true; box.innerHTML = ""; btn.innerHTML = `${icon("eye")}Show`; return; }
+  const [tid, mid] = btn.dataset.showtok.split("|");
+  let tok;
+  try { tok = (await api(`/targets/${tid}/members/${mid}/token`, { body: {} })).token; } catch (e) { return toast(e.message); }
+  box.innerHTML = `<code class="tok-val">${esc(tok)}</code><button type="button" class="small" data-cp>Copy</button>`;
+  box.hidden = false; btn.innerHTML = `${icon("eye")}Hide`;
+  $("[data-cp]", box).onclick = async (e) => { try { await navigator.clipboard.writeText(tok); e.target.textContent = "Copied"; } catch { toast("Copy failed; select the token and copy it."); } };
+  clearTimeout(btn._t); btn._t = setTimeout(() => { if (!box.hidden) btn.click(); }, 60000);
 }
 function editTarget(t = { type: "standalone", members: [{}] }) {
   const draw = () => {
@@ -224,14 +237,15 @@ function editTarget(t = { type: "standalone", members: [{}] }) {
       <div class="form"><label>Name</label><input id="tName" value="${esc(t.name || "")}">
       <label>Type</label><select id="tType"><option value="standalone">Standalone FortiGate</option><option value="fgcp">HA cluster (FGCP)</option><option value="fgsp">HA peers (FGSP)</option></select></div>
       <p class="hint">${{ standalone: "A single FortiGate.", fgcp: "<b>First address: the cluster's shared management IP</b>, an interface address that only the primary answers on and that moves with it on failover. All upgrades go through it. <b>Extra addresses (optional): each unit's dedicated HA management interface</b> (<code>ha-mgmt-interfaces</code>), which reaches that unit whichever unit is primary. Add them to use Local only or Secondary only, confirm each unit's version, and run checks on secondaries. Don't enter a secondary's ordinary interface IP: secondaries don't answer on the cluster's shared addresses.", fgsp: "Each peer is a separate FortiGate and is upgraded on its own. Add every peer's own management address." }[t.type]}</p>
-      <div id="members">${t.members.map((m, i) => memberRow(m, i, t.type)).join("")}</div>
+      <div id="members">${t.members.map((m, i) => memberRow(m, i, t.type, t.id)).join("")}</div>
       ${t.type !== "standalone" ? '<button type="button" id="addMember">' + icon("plus") + 'Add member</button>' : ""}
-      <p class="hint">Create the token on the FortiGate under System › Administrators › Create New › REST API Admin, with read/write on System and read on everything else. Tokens are stored in the OS keychain.</p>`,
+      <p class="hint">Create the token on the FortiGate under System › Administrators › Create New › REST API Admin, with read/write on System and read on everything else. Tokens and SSH passwords are kept in the app's encrypted vault (Settings › Credential storage).</p>`,
     '<button value="cancel">Cancel</button><button type="button" class="primary" id="saveT">OK</button>');
     $("#tType", f).value = t.type;
     $("#tType", f).onchange = (e) => { collect(f); t.type = e.target.value; if (t.type === "standalone") t.members = t.members.slice(0, 1); draw(); };
     const am = $("#addMember", f); if (am) am.onclick = () => { collect(f); t.members.push({}); draw(); };
     $$("[data-rm]", f).forEach((b, i) => b.onclick = () => { collect(f); t.members.splice(i + 1, 1); draw(); });
+    $$("[data-showtok]", f).forEach((b) => b.onclick = () => showToken(b));
     $("#saveT", f).onclick = async () => { collect(f);
       const hosts = t.members.map((m) => `${(m.host || "").trim()}:${m.port || 443}`);
       if (new Set(hosts).size !== hosts.length) return toast("Two addresses are the same. For an FGCP cluster, extra addresses must be each unit's own HA management address, not the cluster address again.");

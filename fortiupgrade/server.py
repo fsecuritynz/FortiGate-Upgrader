@@ -196,6 +196,19 @@ def save_target(body: dict = Body(...)):
     return saved
 
 
+@app.post("/api/targets/{tid}/members/{mid}/token")
+def reveal_token(tid: str, mid: str):
+    """The stored REST API token of one member, for the Show button in the device form. POST and
+    no-store so it isn't cached; the value is never written to logs or job output."""
+    t = _target(tid)
+    if not any(m["id"] == mid for m in t["members"]):
+        raise HTTPException(404, "member not found")
+    tok = storage.get_secret(f"{mid}:token")
+    if not tok:
+        raise HTTPException(404, "no API token is stored for this member")
+    return JSONResponse({"token": tok}, headers={"Cache-Control": "no-store"})
+
+
 @app.delete("/api/targets/{tid}")
 def delete_target(tid: str):
     storage.delete_target(tid)

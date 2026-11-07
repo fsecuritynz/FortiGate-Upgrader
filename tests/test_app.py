@@ -904,3 +904,20 @@ def test_review_clean_standalone_and_parsers():
     assert len(review.parse_crashlog(crash)) == 1
     la = review.analyse_logs([{"level": "warning", "logdesc": "Link monitor", "msg": "Link monitor: interface port5 was turned down", "date": "2026-11-07", "time": f"10:0{i}:00"} for i in range(4)])
     assert la["groups"][0]["title"].startswith("Interface flapping: port5")
+
+
+def test_reveal_stored_api_token():
+    from fastapi.testclient import TestClient
+
+    from fortiupgrade import server
+    t = storage.save_target({"name": "x", "type": "fgcp", "members": [{"host": "10.0.0.1"}, {"host": "10.0.0.2"}]},
+                            {"0": {"token": "tok-abc123"}})
+    c = TestClient(server.app, headers={"x-auth": server.TOKEN})
+    m0, m1 = t["members"]
+    r = c.post(f"/api/targets/{t['id']}/members/{m0['id']}/token")
+    assert r.status_code == 200 and r.json() == {"token": "tok-abc123"} and r.headers["cache-control"] == "no-store"
+    assert c.post(f"/api/targets/{t['id']}/members/{m1['id']}/token").status_code == 404   # none stored
+    assert c.post(f"/api/targets/{t['id']}/members/nope/token").status_code == 404
+    assert c.get(f"/api/targets/{t['id']}/members/{m0['id']}/token").status_code == 405    # POST only
+    assert TestClient(server.app).post(f"/api/targets/{t['id']}/members/{m0['id']}/token").status_code == 401
+    assert "tok-abc123" not in c.get("/api/targets").text

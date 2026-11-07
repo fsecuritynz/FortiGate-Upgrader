@@ -418,3 +418,9 @@ table.rv-t td { vertical-align: top; }
 .rv-ev pre { margin: 4px 0 0; font-size: 11.5px; white-space: pre-wrap; word-break: break-all; }
 .rv-logs { margin: 0 14px 12px; }
 .rv-samples { font-size: 12px; line-height: 1.45; max-height: 140px; overflow: auto; word-break: break-word; }
+
+/* device form: show stored API token */
+.tok-in { display: flex; gap: 6px; align-items: center; } .tok-in input { flex: 1; min-width: 0; }
+.tok-in button svg { width: 14px; height: 14px; }
+.tok-show { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
+.tok-val { flex: 1; min-width: 0; font-size: 12px; padding: 4px 6px; background: var(--panel-head); border: 1px solid var(--rule); border-radius: 3px; overflow-wrap: anywhere; user-select: all; color: var(--text); }

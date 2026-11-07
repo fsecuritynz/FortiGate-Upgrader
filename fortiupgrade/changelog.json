@@ -1,5 +1,17 @@
 [
   {
+    "version": "0.13.1",
+    "build": 23,
+    "date": "2026-11-07",
+    "title": "Show saved API token",
+    "changes": [
+      {
+        "type": "new",
+        "text": "Edit a device and click Show next to REST API token to see the saved token, with a Copy button. It hides again after a minute; the token is never written to logs."
+      }
+    ]
+  },
+  {
     "version": "0.13.0",
     "build": 22,
     "date": "2026-11-07",
