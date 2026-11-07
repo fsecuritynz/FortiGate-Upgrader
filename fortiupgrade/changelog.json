@@ -1,5 +1,29 @@
 [
   {
+    "version": "0.16.0",
+    "build": 26,
+    "date": "2026-11-07",
+    "title": "Upgrade stage diagram",
+    "changes": [
+      {
+        "type": "new",
+        "text": "The install view shows each device's upgrade as a diagram above the log: one row per phase (Prepare, each firmware hop, Finish), each stage a node on a line, coloured by status (pending, in progress, waiting for approval, done, skipped, failed), with how long it took."
+      },
+      {
+        "type": "new",
+        "text": "Stages are planned from the actual upgrade: connect and plan, pre-checks, go-ahead, set HA upgrade mode, then per hop transfer image, install and reboot, and HA in sync, then restore HA setting, post-checks and compare. FGSP rolling upgrades show each peer."
+      },
+      {
+        "type": "new",
+        "text": "Live notes on each stage: the upgrade path, the reboot progress (elapsed time, still running the old version, back on the new build), the HA sync state, the HA setting changed, and the pre/post difference counts. A failed stage shows the error."
+      },
+      {
+        "type": "improved",
+        "text": "Jobs › an upgrade's details show the same diagram, and it is kept with the job history."
+      }
+    ]
+  },
+  {
     "version": "0.15.0",
     "build": 25,
     "date": "2026-11-07",

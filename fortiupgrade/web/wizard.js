@@ -355,8 +355,13 @@ function wInstall(W, body, foot, nav, go_, c) {
       $("#iprobes").innerHTML = probePanel(j.probes);
       if (op) $("#iprobes details").open = true;
     }
-    $("#icards").innerHTML = kids.map((k) => `<div class="devcard"><div class="dh"><b>${esc(k.title)}</b>${statusBadge(k.status)}</div><div class="db">${stepper(k.stage, k.status)}<div><b>${esc(k.stage || "")}</b></div><div class="lastline" title="${esc(k.last)}">${esc(k.error || k.last || "")}</div>
+    const keep = {};
+    $$(".devcard[data-k]", $("#icards")).forEach((d) => { const tr = $(".fd-track", d); if (tr && tr.dataset.user === "1") keep[d.dataset.k] = tr.scrollLeft; });
+    $("#icards").classList.toggle("flowcards", kids.some((k) => (k.flow || []).length));
+    $("#icards").innerHTML = kids.map((k) => `<div class="devcard" data-k="${k.id}"><div class="dh"><b>${esc(k.title)}</b><span class="hint">${esc(k.stage || "")}</span>${statusBadge(k.status)}</div><div class="db">${(k.flow || []).length ? flowDiagram(k.flow) : stepper(k.stage, k.status) + `<div><b>${esc(k.stage || "")}</b></div>`}<div class="lastline" title="${esc(k.last)}">${esc(k.error || k.last || "")}</div>
       ${k.prompt && j.status !== "waiting" ? `<div class="gate" style="margin:8px 0"><b>${esc(k.prompt)}</b><div class="row" style="margin-top:6px"><button class="small primary" data-ok="${k.id}">Continue</button><button class="small" data-no="${k.id}">Stop</button></div></div>` : ""}</div></div>`).join("");
+    flowFollow($("#icards"));
+    Object.entries(keep).forEach(([id, x]) => { const tr = $(`.devcard[data-k="${id}"] .fd-track`, $("#icards")); if (tr) { tr.scrollLeft = x; tr.dataset.user = "1"; } });
     $$("[data-ok]", $("#icards")).forEach((b) => b.onclick = () => api(`/jobs/${b.dataset.ok}/answer`, { body: { approve: true } }));
     $$("[data-no]", $("#icards")).forEach((b) => b.onclick = () => api(`/jobs/${b.dataset.no}/answer`, { body: { approve: false } }));
     const over = ["done", "failed", "cancelled", "interrupted"].includes(j.status) && !kids.some((k) => ["running", "waiting"].includes(k.status));

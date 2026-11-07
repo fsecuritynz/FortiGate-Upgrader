@@ -341,8 +341,19 @@ def _wait(job: Job, m: dict, version: str | None, opts: dict, dry: bool):
                              interval=float(opts.get("poll_interval", 15)),
                              initial_delay=float(opts.get("initial_delay", 90)),
                              expect_version=version,
-                             on_tick=lambda s: (job.check_cancel(), job.say(f"{who}: {s}")))
+                             on_tick=lambda s: (job.check_cancel(), job.say(f"{who}: {s}"), job.flow_note(_tick_note(s))))
     job.say(f"{who}: back online on {st['version']} build {st.get('build')}", "ok")
+    job.flow_note(f"back on v{FosVersion.parse(st['version'])} build {st.get('build')}")
+
+
+def _tick_note(s: str) -> str:
+    """Short form of a reboot-wait tick for the stage diagram."""
+    m = re.match(r"\[(\w+)\] (.*?)(; next check.*)?$", s)
+    if not m:
+        return s[:80]
+    el, what = m.group(1), m.group(2)
+    what = re.sub(r"^check #\d+: ", "", what)
+    return f"{el} · {what}"[:90]
 
 
 def _wait_ha_sync(job: Job, m: dict, opts: dict, dry: bool, timeout: float = 900):
@@ -357,7 +368,9 @@ def _wait_ha_sync(job: Job, m: dict, opts: dict, dry: bool, timeout: float = 900
                 ha = c_ha(Ctx(client=c, vdom_mode=False), None)
             if ha_in_sync(ha):
                 job.say(f"HA cluster in sync ({len(ha)} members)", "ok")
+                job.flow_note(f"{len(ha)} units in sync")
                 return
+            job.flow_note("waiting for the units to synchronise")
             job.say("HA not yet in sync, waiting...", "debug")
         except Exception as e:  # noqa: BLE001
             job.say(f"HA sync check: {e}", "debug")
@@ -389,22 +402,34 @@ def _fgcp_set_mode(job, c: FortiGateClient, running: FosVersion, mode: str, dry:
 def _fgcp_hop(job, target, version, opts, dry, running: FosVersion):
     mode = opts.get("ha_mode", "uninterruptible")
     primary = target["members"][0]
+    first = job._flow("hamode") is not None and job._flow("hamode")["status"] == "pending"
+    if first:
+        job.flow_go("hamode", mode)
     with client_for(primary) as c:
         changed = _fgcp_set_mode(job, c, running, mode, dry)
         if changed:
             job.state.setdefault("ha_restore", changed)
+    if first:
+        job.flow_set("hamode", "done" if changed else "skipped",
+                     f"{changed[0]}: {changed[1]} → {mode if changed[0] == 'upgrade-mode' else ('enable' if mode == 'uninterruptible' else 'disable')}"
+                     if changed else f"already {mode}")
+    job.flow_go(f"xfer:{version}")
     sel = ([m for m in target["members"] if m["id"] in (opts.get("member_ids") or [primary["id"]])]
            if mode == "local-only" else [primary])
     for m in sel:
         job.check_cancel()
         with client_for(m, timeout=900) as c:
             _push(job, c, version, opts, dry, _label(m))
+    job.flow_go(f"inst:{version}")
     if mode in ("simultaneous", "uninterruptible"):
         if mode == "uninterruptible":
             job.say("Uninterruptible: secondaries upgrade first, then the primary fails over and upgrades. "
                     "The cluster address drops briefly during failover.")
         _wait(job, primary, version, opts, dry)
+        job.flow_go(f"sync:{version}")
         _wait_ha_sync(job, primary, opts, dry)
+        if dry:
+            job.flow_note("simulation")
     elif mode == "secondary-only":
         units = target["members"][1:]
         if units:
@@ -424,9 +449,11 @@ def _fgcp_hop(job, target, version, opts, dry, running: FosVersion):
 def _restore_ha(job, target, dry):
     r = job.state.get("ha_restore")
     if not r or not job.state.get("restore_ha") or r[1] is None:
+        job.flow_set("harestore", "skipped", "nothing to restore")
         return
     key, prev = r
     job.set_stage("Restoring HA setting")
+    job.flow_go("harestore", f"{key} → {prev}")
     job.say(f"{'SIMULATION - would restore' if dry else 'Restoring'} HA {key} → {prev}")
     if not dry:
         try:
@@ -448,6 +475,40 @@ def effective_type(saved: str, info) -> str:
     return saved
 
 
+# ------------------------------------------------------------ stage plan
+def _flow_steps(ttype, mode, hops, opts, members, path) -> list[dict]:
+    """The stages an upgrade goes through, in order, for the install view's diagram."""
+    src = "FortiGuard download" if opts.get("source", "fortiguard") == "fortiguard" else "push from this computer"
+    st = [{"id": "connect", "label": "Connect and plan", "sub": "read the device, plan the path"}]
+    if opts.get("run_checks", True):
+        st.append({"id": "pre", "label": "Pre-upgrade checks", "sub": "collect state to compare"})
+    if opts.get("_batch_sync") or opts.get("approve_before_upgrade", True):
+        st.append({"id": "approve", "label": "Go-ahead", "sub": "start the install"})
+    inst_sub = {"uninterruptible": "secondaries first, then failover and the primary",
+                "simultaneous": "all units reboot together", "local-only": "selected units only",
+                "secondary-only": "secondaries only"}
+    if ttype == "fgcp":
+        st.append({"id": "hamode", "label": "Set HA upgrade mode", "sub": mode})
+    for v in hops:
+        g = f"v{v}"
+        if ttype == "fgsp" and mode != "simultaneous":
+            for m in members if mode != "local-only" else [x for x in members if x["id"] in (opts.get("member_ids") or [])]:
+                who = m.get("name") or m["host"]
+                st += [{"id": f"xfer:{m['id']}:{v}", "label": "Transfer image", "sub": f"{who} · {src}", "group": g},
+                       {"id": f"inst:{m['id']}:{v}", "label": "Install and reboot", "sub": who, "group": g}]
+            continue
+        st += [{"id": f"xfer:{v}", "label": "Transfer image", "sub": src, "group": g},
+               {"id": f"inst:{v}", "label": "Install and reboot", "sub": inst_sub.get(mode, "") if ttype == "fgcp" else "", "group": g}]
+        if ttype == "fgcp" and mode in ("simultaneous", "uninterruptible"):
+            st.append({"id": f"sync:{v}", "label": "HA in sync", "sub": "configuration checksums match", "group": g})
+    if ttype == "fgcp" and opts.get("restore_ha_setting", True):
+        st.append({"id": "harestore", "label": "Restore HA setting", "sub": "put the upgrade mode back"})
+    if opts.get("run_checks", True):
+        st += [{"id": "post", "label": "Post-upgrade checks", "sub": "collect state again"},
+               {"id": "cmp", "label": "Compare", "sub": "before and after"}]
+    return st
+
+
 # -------------------------------------------------------- single target
 def run_upgrade(job: Job, target: dict, opts: dict) -> dict:
     job.state = {"restore_ha": bool(opts.get("restore_ha_setting", True))}
@@ -463,9 +524,12 @@ def run_upgrade(job: Job, target: dict, opts: dict) -> dict:
 
     # 1. discovery, management, path
     job.set_stage("Connecting")
+    job.flow_plan([{"id": "connect", "label": "Connect and plan", "sub": "read the device, plan the path"}])
+    job.flow_go("connect")
     with client_for(primary) as c:
         info = c.discover()
         job.say(f"{info.hostname}: {info.model} running {info.version.full}")
+        job.flow_note(f"{info.hostname} · {info.model} · v{info.version}")
         mgmt = info.management or {}
         if mgmt.get("managed"):
             for f in fmg.findings(mgmt):
@@ -505,6 +569,8 @@ def run_upgrade(job: Job, target: dict, opts: dict) -> dict:
     if ttype == "fgsp" and mode not in FGSP_MODES:
         raise RuntimeError(f"FGSP mode must be one of {FGSP_MODES}")
     opts = dict(opts, ha_mode=mode)
+    job.flow_plan(_flow_steps(ttype, mode, hops, opts, members, p["steps"]))
+    job.flow_set("connect", "done", " → ".join(f"v{s}" for s in p["steps"]))
 
     # 2. pre-checks
     if ttype == "fgsp":
@@ -516,6 +582,7 @@ def run_upgrade(job: Job, target: dict, opts: dict) -> dict:
     pre = {}
     if opts.get("run_checks", True):
         job.set_stage("Pre-upgrade checks")
+        job.flow_go("pre")
         for m in snap_members:
             job.check_cancel()
             pre[m["id"]] = snapshot_member(job, target, m, "pre-upgrade", check_ids, vdoms)
@@ -525,6 +592,8 @@ def run_upgrade(job: Job, target: dict, opts: dict) -> dict:
                         and not opts.get("ignore_ha_sync"):
                     raise RuntimeError("HA cluster is out of sync before the upgrade. Aborting.")
     job.state["pre"] = pre
+    if pre:
+        job.flow_set("pre", "done", f"{len(pre)} unit{'s' if len(pre) > 1 else ''} collected")
     if opts.get("_batch_sync") and not opts.get("pause_after_prechecks", True):
         job.wait_approval(f"Pre-checks complete for {target['name']}.", quiet=True,
                           waiting_msg="Pre-checks complete; waiting for the other devices to finish theirs")
@@ -537,14 +606,19 @@ def run_upgrade(job: Job, target: dict, opts: dict) -> dict:
         if not opts.get("run_checks", True) or m["id"] not in pre:
             return None
         job.set_stage("Post-upgrade checks")
+        job.flow_go("post", _label(m))
         sid = snapshot_member(job, target, m, "post-upgrade", check_ids, vdoms)
         job.set_stage("Comparing pre and post")
+        job.flow_go("cmp")
         rep = diff_snapshots(storage.load_snapshot(target["id"], pre[m["id"]]),
                              storage.load_snapshot(target["id"], sid))
         f = storage.save_report(target["id"], f"{pre[m['id']]}__vs__{sid}", rep)
         t = rep["totals"]
         job.say(f"{_label(m)}: {t['critical']} critical, {t['warning']} warning, {t['info']} informational "
                 "differences", "error" if t["critical"] else "warn" if t["warning"] else "ok")
+        job.flow_set("cmp", "done", f"{t['critical']} critical · {t['warning']} warning · {t['info']} info")
+        if t["critical"]:
+            job._flow("cmp")["attention"] = True
         reports.append({"member": _label(m), "member_id": m["id"], "pre": pre[m["id"]], "post": sid,
                         "totals": t, "report_file": str(f)})
         return rep
@@ -555,8 +629,10 @@ def run_upgrade(job: Job, target: dict, opts: dict) -> dict:
         if ttype == "standalone":
             for v in hops:
                 job.check_cancel()
+                job.flow_go(f"xfer:{v}")
                 with client_for(primary, timeout=900) as c:
                     _push(job, c, v, opts, dry, _label(primary))
+                job.flow_go(f"inst:{v}")
                 _wait(job, primary, v, opts, dry)
                 running = FosVersion.parse(v)
             post_and_diff(primary)
@@ -576,9 +652,11 @@ def run_upgrade(job: Job, target: dict, opts: dict) -> dict:
             sel = snap_members
             if mode == "simultaneous":
                 for v in hops:
+                    job.flow_go(f"xfer:{v}")
                     for m in sel:
                         with client_for(m, timeout=900) as c:
                             _push(job, c, v, opts, dry, _label(m))
+                    job.flow_go(f"inst:{v}")
                     for m in sel:
                         _wait(job, m, v, opts, dry)
                 for m in sel:
@@ -587,8 +665,10 @@ def run_upgrade(job: Job, target: dict, opts: dict) -> dict:
                 for idx, m in enumerate(sel):
                     for v in hops:
                         job.check_cancel()
+                        job.flow_go(f"xfer:{m['id']}:{v}")
                         with client_for(m, timeout=900) as c:
                             _push(job, c, v, opts, dry, _label(m))
+                        job.flow_go(f"inst:{m['id']}:{v}")
                         _wait(job, m, v, opts, dry)
                     rep = post_and_diff(m)
                     if idx < len(sel) - 1:

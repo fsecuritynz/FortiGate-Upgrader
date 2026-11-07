@@ -44,6 +44,62 @@ class Job:
         self.finished: str | None = None
         self.label: str | None = None  # short name shown in log streams (defaults to the title)
         self.probes = None  # ProbeSession while running; its summary dict once finished
+        # the stages of an upgrade for the install view: [{id, label, sub, group, status, started, ended, note}]
+        self.flow: list[dict] = []
+
+    # --------------------------------------------------------------- flow
+    def flow_plan(self, steps: list[dict]):
+        """Set the planned stages; stages already started keep their state."""
+        old = {s["id"]: s for s in self.flow}
+        self.flow = [dict({"status": "pending", "started": None, "ended": None, "note": ""}, **s, **{
+            k: old[s["id"]][k] for k in ("status", "started", "ended", "note") if s["id"] in old}) for s in steps]
+
+    def _flow(self, sid):
+        return next((s for s in self.flow if s["id"] == sid), None)
+
+    def flow_go(self, sid: str, note: str = ""):
+        """Start a stage; the stage running before it is complete."""
+        s = self._flow(sid)
+        if s is None:
+            return
+        now = int(time.time() * 1000)
+        for x in self.flow:
+            if x["status"] in ("running", "waiting") and x is not s:
+                x["status"], x["ended"] = "done", now
+        if s["status"] != "running":
+            s["status"], s["started"], s["ended"] = "running", s["started"] or now, None
+        if note:
+            s["note"] = note
+
+    def flow_note(self, note: str, sid: str | None = None):
+        s = self._flow(sid) if sid else next((x for x in self.flow if x["status"] in ("running", "waiting")), None)
+        if s is not None:
+            s["note"] = note
+
+    def flow_set(self, sid: str, status: str, note: str | None = None):
+        s = self._flow(sid)
+        if s is None:
+            return
+        now = int(time.time() * 1000)
+        s["status"] = status
+        if status in ("done", "skipped", "failed"):
+            s["ended"] = now
+            s["started"] = s["started"] or (now if status != "skipped" else None)
+        if note is not None:
+            s["note"] = note
+
+    def flow_end(self, status: str, error: str | None = None):
+        now = int(time.time() * 1000)
+        for x in self.flow:
+            if x["status"] in ("running", "waiting"):
+                x["status"] = "done" if status == "done" else "failed" if status == "failed" else "cancelled"
+                x["ended"] = now
+                if error and status == "failed":
+                    x["note"] = error
+        if status == "done":
+            for x in self.flow:
+                if x["status"] == "pending":
+                    x["status"] = "skipped"
 
     # ------------------------------------------------------------ logging
     def say(self, msg: str, level: str = "info", src: str | None = None):
@@ -74,6 +130,9 @@ class Job:
         self.prompt = prompt
         self.status = "waiting"
         prev_stage, self.stage = self.stage, "Awaiting approval" if not quiet else "Waiting for the other devices"
+        if self._flow("approve"):
+            self.flow_go("approve", "waiting for the other devices" if quiet else "waiting for your approval")
+            self._flow("approve")["status"] = "waiting"
         self.say(waiting_msg or f"Waiting for approval: {prompt}", "gate" if not quiet else "info")
         self._approval.clear()
         self._approval.wait()
@@ -83,6 +142,8 @@ class Job:
             raise Cancelled()
         self.status = "running"
         self.stage = prev_stage
+        if self._flow("approve") and self._flow("approve")["status"] == "waiting":
+            self.flow_set("approve", "done", "approved" if not quiet else "all devices ready")
         self.say("Continuing" if quiet else "Approved, continuing", "info" if quiet else "gate")
 
     def answer(self, approve: bool):
@@ -97,7 +158,7 @@ class Job:
                 "target_ids": self.target_ids or ([self.target_id] if self.target_id else []), "meta": self.meta,
                 "created": self.created, "finished": self.finished, "log": self.log[since:], "log_len": len(self.log),
                 "prompt": self.prompt, "result": self.result, "error": self.error,
-                "probes": self.probes_summary()}
+                "probes": self.probes_summary(), "flow": self.flow}
 
     def probes_summary(self):
         p = self.probes
@@ -138,13 +199,16 @@ def start(kind: str, title: str, fn, *args, parent: Job | None = None, target_id
             job.result = fn(job, *args, **kw)
             job.status = "done"
             job.stage = "Complete"
+            job.flow_end("done")
             job.say("Finished", "ok")
         except Cancelled:
             job.status = "cancelled"
+            job.flow_end("cancelled")
             job.stage = f"Cancelled during: {job.stage}" if job.stage not in ("Starting", "Complete") else "Cancelled"
             job.say("Cancelled", "warn")
         except Exception as e:  # noqa: BLE001
             job.status = "failed"
+            job.flow_end("failed", str(e))
             job.stage = f"Failed during: {job.stage}" if job.stage not in ("Starting", "Complete") else "Failed"
             job.error = str(e)
             job.say(f"FAILED: {e}", "error")

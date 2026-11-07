@@ -664,8 +664,8 @@ function watchJob(id, el, opts = {}) {
       if (j.prompt) { $("#ja", g).onclick = () => api(`/jobs/${id}/answer`, { body: { approve: true } }); $("#jr", g).onclick = () => api(`/jobs/${id}/answer`, { body: { approve: false } }); }
     }
     if (j.children_detail?.length && j.kind === "batch") {
-      $("#kids", el).innerHTML = `<div class="devcards">${j.children_detail.map((k) => `<div class="devcard"><div class="dh"><b>${esc(k.title)}</b>${statusBadge(k.status)}</div><div class="db">
-        ${stepper(k.stage, k.status)}<div><b>${esc(k.stage || "")}</b></div><div class="lastline" title="${esc(k.last)}">${esc(k.error || k.last)}</div>
+      $("#kids", el).innerHTML = `<div class="devcards ${j.children_detail.some((k) => (k.flow || []).length) ? "flowcards" : ""}">${j.children_detail.map((k) => `<div class="devcard"><div class="dh"><b>${esc(k.title)}</b><span class="hint">${esc(k.stage || "")}</span>${statusBadge(k.status)}</div><div class="db">
+        ${(k.flow || []).length ? flowDiagram(k.flow) : stepper(k.stage, k.status) + `<div><b>${esc(k.stage || "")}</b></div>`}<div class="lastline" title="${esc(k.last)}">${esc(k.error || k.last)}</div>
         ${k.prompt && j.status !== "waiting" ? `<div class="gate" style="margin:8px 0"><b>${esc(k.prompt)}</b><div class="row" style="margin-top:6px"><button class="small primary" data-ok="${k.id}">Approve</button><button class="small" data-no="${k.id}">Stop</button></div></div>` : ""}
         ${(k.result?.reports || []).map((r) => `<div class="row" style="margin-top:6px">${sevBadge(r.totals.critical ? "critical" : r.totals.warning ? "warning" : null)} ${esc(r.member)}: ${r.totals.critical} critical · ${r.totals.warning} warning <button class="small link" data-diff="${k.target_id}|${r.pre}|${r.post}">View diff</button></div>`).join("")}
         <button class="small link" data-log="${k.id}">Device log</button></div></div>`).join("")}</div>`;

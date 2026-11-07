@@ -984,3 +984,48 @@ def test_onboard_detect_cluster_and_unit_addresses():
     assert r["role"] == "unit" and "dedicated" in r["kind"] and r["cluster_host"] == "10.8.8.21"
     assert classify_address("10.8.8.21", mg, "standalone", [])["role"] == "device"
     assert classify_address("fw.example.com", mg, "a-p", ["port4"])["role"] == "unknown"
+
+
+def test_upgrade_stage_flow_for_fgcp_multi_hop():
+    state = mock.new_state("7.2.10", ha="a-p", reboot=1)
+    port, srv = serve(state)
+    t = add_target("fgcp", [port])
+    job = jobs.start("upgrade", "t", orchestrator.run_upgrade, t,
+                     dict(FAST, target_version="7.6.4", source="fortiguard", ha_mode="simultaneous", dry_run=False))
+    seen_running = set()
+    for _ in range(600):
+        seen_running |= {s["id"] for s in job.flow if s["status"] == "running"}
+        if job.status != "running":
+            break
+        time.sleep(0.05)
+    srv.should_exit = True
+    assert job.status == "done", job.error
+    ids = [s["id"] for s in job.flow]
+    assert ids == ["connect", "pre", "hamode", "xfer:7.4.8", "inst:7.4.8", "sync:7.4.8",
+                   "xfer:7.6.4", "inst:7.6.4", "sync:7.6.4", "harestore", "post", "cmp"]
+    st = {s["id"]: s for s in job.flow}
+    assert all(s["status"] == "done" for s in job.flow), [(s["id"], s["status"]) for s in job.flow]
+    assert st["connect"]["note"] == "v7.2.10 → v7.4.8 → v7.6.4"
+    assert st["hamode"]["note"] == "uninterruptible-upgrade: enable → disable"
+    assert st["inst:7.4.8"]["group"] == "v7.4.8" and st["inst:7.4.8"]["note"].startswith("back on v7.4.8")
+    assert "critical" in st["cmp"]["note"] and all(s["started"] and s["ended"] >= s["started"] for s in job.flow)
+    assert {"inst:7.4.8", "inst:7.6.4"} & seen_running
+    assert job.to_dict()["flow"] == job.flow
+
+
+def test_upgrade_stage_flow_marks_failure():
+    state = mock.new_state("7.2.10", reboot=1)
+    port, srv = serve(state)
+    t = add_target("standalone", [port])
+    job = jobs.start("upgrade", "t", orchestrator.run_upgrade, t,
+                     dict(FAST, target_version="7.9.9", source="fortiguard", dry_run=False, direct=True))
+    for _ in range(200):
+        if job.status != "running":
+            break
+        time.sleep(0.05)
+    srv.should_exit = True
+    assert job.status == "failed"
+    st = {s["id"]: s for s in job.flow}
+    assert st["connect"]["status"] == "done" and st["xfer:7.9.9"]["status"] == "failed"
+    assert "not offered by FortiGuard" in st["xfer:7.9.9"]["note"]
+    assert st["inst:7.9.9"]["status"] == "pending"
