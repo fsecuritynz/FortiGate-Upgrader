@@ -1,5 +1,25 @@
 [
   {
+    "version": "0.18.0",
+    "build": 33,
+    "date": "2026-11-07",
+    "title": "Service-gated: avoid a fail-back",
+    "changes": [
+      {
+        "type": "new",
+        "text": "Avoid a fail-back (on by default): with override disabled, a rejoining unit with the higher HA priority takes the primary role back if the other unit has been up for less than ha-uptime-diff-margin (300 s by default), causing a second failover. The app reads the margin, override and priorities, times how long the upgraded unit took to come back, and holds the cutover until it will be older than the margin when the old primary rejoins."
+      },
+      {
+        "type": "new",
+        "text": "No wait when the upgraded unit has the higher priority; with override on, the app explains that priority always decides instead of waiting. After the old primary rejoins, the log says which unit is primary and flags a fail-back if one happened."
+      },
+      {
+        "type": "new",
+        "text": "Wizard option under Service-gated, and an Avoid fail-back stage in the diagram with a countdown. Stop waiting carries on and marks the stage."
+      }
+    ]
+  },
+  {
     "version": "0.17.4",
     "build": 32,
     "date": "2026-11-07",

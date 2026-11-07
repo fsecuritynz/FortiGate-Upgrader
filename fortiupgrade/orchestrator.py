@@ -845,6 +845,101 @@ def _service_gate(job, opts: dict, sid: str, before: str, dry: bool):
     job.wait_approval(f"{', '.join(bad)} still not stable after {int(limit)} s. Continue with {before} anyway?")
 
 
+def _ha_election_settings(target) -> dict:
+    """What decides the primary when the old primary rejoins: override and ha-uptime-diff-margin."""
+    try:
+        with client_for(target["members"][0]) as c:
+            h = c.cmdb("system/ha") or {}
+    except Exception:  # noqa: BLE001
+        h = {}
+    try:
+        margin = int(h.get("ha-uptime-diff-margin") or 300)
+    except (TypeError, ValueError):
+        margin = 300
+    return {"margin": margin, "override": h.get("override") == "enable"}
+
+
+def failback_hold(margin: float, upgraded_up_for: float, expected_reboot: float, safety: float = 30) -> float:
+    """Seconds to hold the cutover so that, when the old primary has rebooted and rejoins, the
+    upgraded unit has been up longer than the uptime margin (so age, not priority, decides)."""
+    return max(0.0, margin + safety - upgraded_up_for - expected_reboot)
+
+
+def _failback_guard(job, opts, sid, units, p_sn, prio, ha, back, reboot, dry):
+    """With override disabled, FGCP elects the unit with the longer HA uptime, but ignores
+    differences under ha-uptime-diff-margin (300 s by default) and then compares priority. If the
+    old primary has the higher priority and comes back within the margin, it takes the primary role
+    back: a second failover. Hold the cutover long enough that this can't happen."""
+    job.flow_go(sid)
+    if dry:
+        job.flow_note("simulation")
+        return
+    upgraded = [s for s in back if s != p_sn]
+    if not upgraded:
+        job.flow_set(sid, "skipped", "no upgraded unit to protect")
+        return
+    new = min(upgraded, key=lambda s: back[s])  # up the longest: the one that takes over
+    names = {s: _label(units[s]) for s in units}
+    p_old, p_new = prio.get(p_sn), prio.get(new)
+    if ha.get("override"):
+        msg = (f"HA override is on, so the higher-priority unit always becomes primary"
+               + (f": {names[p_sn]} (priority {p_old}) will take the role back from {names[new]} (priority {p_new})"
+                  if isinstance(p_old, int) and isinstance(p_new, int) and p_old > p_new else "") + ". Waiting can't prevent it.")
+        job.say(msg, "warn")
+        job.flow_set(sid, "skipped", "override is on: priority decides")
+        if isinstance(p_old, int) and isinstance(p_new, int) and p_old > p_new:
+            job._flow(sid)["attention"] = True
+        return
+    if isinstance(p_old, int) and isinstance(p_new, int) and p_new > p_old:
+        job.flow_set(sid, "skipped", f"{names[new]} has the higher priority ({p_new} > {p_old})")
+        return
+    margin = float(ha.get("margin") or 300)
+    est = max(reboot.get(new) or 0.0, float(opts.get("min_reboot_estimate_s", 60)))
+    up = time.time() - back[new]
+    hold = failback_hold(margin, up, est, float(opts.get("failback_safety_s", 30)))
+    why = (f"{names[p_sn]} (priority {p_old}) would take the primary role back if {names[new]} (priority {p_new}) has been "
+           f"up less than the {int(margin)} s uptime margin when it rejoins. {names[new]} took {int(est)} s to come back")
+    if hold <= 0:
+        job.say(f"{why}; it has been up {int(up)} s, so it will be old enough. No extra wait.", "ok")
+        job.flow_set(sid, "done", f"no wait needed · {names[new]} up {int(up)}s")
+        return
+    job.say(f"{why}, so the cutover waits {round(hold)} s more.")
+    end = time.time() + hold
+    job.begin_wait(f"{names[new]} to be up long enough to stay primary")
+    try:
+        while time.time() < end:
+            job.check_cancel()
+            if job.skip_wait.is_set():
+                job.say("Continuing with the cutover at your request; the old primary may take the primary role back", "warn")
+                job.flow_note("you continued · fail-back possible")
+                job._flow_attention()
+                return
+            job.flow_note(f"{int(end - time.time())}s left · {names[new]} up {int(time.time() - back[new])}s of {int(margin)}s margin")
+            job.skip_wait.wait(1)
+    finally:
+        job.end_wait()
+    job.flow_note(f"waited {round(hold)}s · {names[new]} stays primary")
+
+
+def _check_failback(job, target, units, p_sn, opts, v):
+    """After the old primary rejoins: report which unit is primary, so a fail-back is visible."""
+    try:
+        with client_for(target["members"][0], timeout=15) as c:
+            now_p = c.status()["serial"]
+    except Exception:  # noqa: BLE001
+        return
+    name = _label(units[now_p]) if now_p in units else now_p
+    if now_p == p_sn:
+        job.say(f"{name} took the primary role back when it rejoined (a second failover). Check the probes around "
+                "that time; equal HA priorities or a smaller ha-uptime-diff-margin avoid it.", "warn")
+        s = job._flow(f"guard:{v}")
+        if s is not None:
+            s["attention"] = True
+            s["note"] = (s.get("note") or "") + " · fail-back happened"
+    else:
+        job.say(f"{name} stayed primary: no fail-back", "ok")
+
+
 def _gated_hop(job, target, version, opts, dry):
     """Service-gated FGCP upgrade (FortiOS upgrade-mode local-only): each secondary is upgraded
     through its own address and must rejoin and the services must be stable before the next
@@ -864,12 +959,18 @@ def _gated_hop(job, target, version, opts, dry):
     opts.setdefault("_gated_orders", {})[v] = [(s, _label(units[s])) for s in order]
     if job.state.get("plan_args"):
         job.flow_plan(_flow_steps(*job.state["plan_args"]))
+    ha = {} if dry else _ha_election_settings(target)
+    prio = {p["serial"]: p.get("priority") for p in peers}
+    back: dict[str, float] = {}      # serial -> when the upgraded unit answered again on the new firmware
+    reboot: dict[str, float] = {}    # serial -> how long its install and reboot took
     for sn in order:
         m = units[sn]
         who = _label(m)
         is_primary = sn == p_sn
         if is_primary:
             _service_gate(job, opts, f"gate:{v}", "the cutover", dry)
+            if opts.get("avoid_failback", True):
+                _failback_guard(job, opts, f"guard:{v}", units, p_sn, prio, ha, back, reboot, dry)
             if opts.get("approve_cutover"):
                 job.flow_go(f"approvecut:{v}")
                 job.wait_approval(f"The upgraded unit is back and services are stable. Upgrade {who} now? Its reboot "
@@ -880,9 +981,13 @@ def _gated_hop(job, target, version, opts, dry):
         job.flow_go(f"inst:{sn}:{v}")
         if is_primary:
             job.say(f"{who} is the primary: its reboot is the cutover to the upgraded unit", "warn")
+        t_inst = time.time()
         _wait(job, m, v, opts, dry)
+        back[sn], reboot[sn] = time.time(), time.time() - t_inst
         job.flow_go(f"rejoin:{sn}:{v}")
         _wait_rejoin(job, target, sn, expect, opts, dry)
+        if is_primary and not dry:
+            _check_failback(job, target, units, p_sn, opts, v)
     job.flow_go(f"sync:{v}")
     if not dry:
         job.say("Both units run the new firmware; waiting for the cluster to synchronise")
@@ -944,6 +1049,8 @@ def _flow_steps(ttype, mode, hops, opts, members, path) -> list[dict]:
                 last = i == len(order) - 1
                 if last:
                     st.append({"id": f"gate:{v}", "label": "Services stable", "sub": "before the cutover", "group": g})
+                    if opts.get("avoid_failback", True):
+                        st.append({"id": f"guard:{v}", "label": "Avoid fail-back", "sub": "upgraded unit stays primary", "group": g})
                     if opts.get("approve_cutover"):
                         st.append({"id": f"approvecut:{v}", "label": "Approve cutover", "sub": "your go-ahead", "group": g})
                 role = "primary · reboot is the cutover" if last else "secondary"

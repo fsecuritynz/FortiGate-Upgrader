@@ -124,6 +124,7 @@ The version and build (FortiOS style, e.g. `v0.10.0 build0017`) are in `fortiupg
   3. Optionally ask for your go-ahead.
   4. Upgrade the primary. Its reboot is the cutover to the upgraded unit.
   5. Wait for it to rejoin, the cluster to sync, and the services to be stable again.
+  - **Avoid a fail-back** (on by default): with override disabled, FGCP picks the unit with the longer HA uptime, but ignores differences under `ha-uptime-diff-margin` (300 s by default) and then compares priority. If the old primary has the higher priority and rejoins within the margin, it takes the primary role back, causing a second failover. The app times how long the secondary took to come back and holds the cutover until the upgraded unit will be older than the margin when the old primary returns. When the upgraded unit has the higher priority there's nothing to wait for. With override on, priority always wins, so the app says so instead of waiting. Afterwards it reports which unit ended up primary.
   - Needs the cluster address plus every unit's own address (Add device detects them). With FortiGuard download each secondary fetches its own image, so it needs its own route to FortiGuard; otherwise push a local image.
 - **FGSP**:
   - `uninterruptible`: rolling, one peer at a time, with post-checks and an approval step between peers.

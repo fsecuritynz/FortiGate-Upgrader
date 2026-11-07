@@ -68,7 +68,7 @@ function streamJob(id, con, onTick) {
 const WSTEPS = [["devices", "Devices"], ["image", "Target image"], ["method", "Install method"], ["options", "Options"], ["health", "Config & log review"], ["review", "Pre-flight & review"], ["install", "Install"]];
 function newWizard() {
   return { step: 0, sel: new Set(S.upSel || []), version: "", build: null, maturity: null, source: "fortiguard", path: "fortinet",
-    fw: {}, ha: { fgcp: "uninterruptible", fgsp: "uninterruptible" }, units: {}, checks: true, pause: false, restore: true, gate: { stable: 60, timeout: 900, approve: false },
+    fw: {}, ha: { fgcp: "uninterruptible", fgsp: "uninterruptible" }, units: {}, checks: true, pause: false, restore: true, gate: { stable: 60, timeout: 900, approve: false, failback: true },
     unverified: false, wait: 1800, par: 4, checkIds: null, pf: null, pfJob: null, fmgAck: false, critAck: false, job: null, dry: false, rv: null, rvJob: null, rvAck: false };
 }
 async function pUpgrade() {
@@ -260,7 +260,8 @@ function wOptions(W, body, foot, nav, go_) {
         <div class="row" style="flex-wrap:wrap;gap:14px">
           <label class="row">Services stable for <input id="gStable" type="number" min="5" value="${esc(W.gate.stable)}" style="width:70px"> s</label>
           <label class="row">Give up waiting after <input id="gTimeout" type="number" min="60" value="${esc(W.gate.timeout)}" style="width:80px"> s <span class="hint">(then asks you)</span></label>
-          <label class="cb"><input type="checkbox" id="gApprove" ${W.gate.approve ? "checked" : ""}> Ask me before the cutover</label></div>
+          <label class="cb"><input type="checkbox" id="gApprove" ${W.gate.approve ? "checked" : ""}> Ask me before the cutover</label>
+          <label class="cb" title="With override disabled, a rejoining unit with a higher HA priority takes the primary role back if the other unit has been up for less than ha-uptime-diff-margin (300 s by default). The app holds the cutover so the upgraded unit is old enough by then."><input type="checkbox" id="gFailback" ${W.gate.failback !== false ? "checked" : ""}> Avoid a fail-back to the old primary</label></div>
         ${probeSpecs(W).length ? "" : '<div class="banner warn" style="margin:8px 0 0">No service probes yet: add some below (the per-unit addresses and a host behind the cluster), or the gate can only wait a fixed time.</div>'}
         <div class="hint" style="margin-top:6px">With <b>Download from FortiGuard</b> each secondary downloads its own image, so it needs its own route to FortiGuard; otherwise use <b>Push a local image</b>.</div></div>` : "") +
       (mode === "local-only" ? list.map((t) => `<div style="margin-top:8px"><b>${esc(t.name)}:</b> ${t.members.map((m, n) => `<label class="cb"><input type="checkbox" data-unit="${t.id}:${m.id}" ${(W.units[t.id] || []).includes(m.id) ? "checked" : ""}> ${esc(m.name || m.host)} <span class="hint">${n === 0 ? "(cluster address)" : "(unit address)"}</span></label>`).join("")}</div>`).join("") : "");
@@ -275,7 +276,7 @@ function wOptions(W, body, foot, nav, go_) {
   $("#wNext").onclick = () => {
     W.checks = $("#oChecks").checked; W.pause = $("#oPause").checked; W.restore = $("#oRestore").checked; W.unverified = $("#oUnver").checked;
     W.wait = Number($("#oWait").value) || 1800; W.par = Number($("#oPar").value) || 4;
-    if ($("#gStable")) W.gate = { stable: Math.max(5, Number($("#gStable").value) || 60), timeout: Math.max(60, Number($("#gTimeout").value) || 900), approve: $("#gApprove").checked }; W.checkIds = $$("[data-chk]", body).filter((x) => x.checked).map((x) => x.dataset.chk);
+    if ($("#gStable")) W.gate = { stable: Math.max(5, Number($("#gStable").value) || 60), timeout: Math.max(60, Number($("#gTimeout").value) || 900), approve: $("#gApprove").checked, failback: $("#gFailback").checked }; W.checkIds = $$("[data-chk]", body).filter((x) => x.checked).map((x) => x.dataset.chk);
     const lo = [...(W.ha.fgcp === "local-only" ? fgcp : []), ...(W.ha.fgsp === "local-only" ? fgsp : [])];
     if (lo.some((t) => !(W.units[t.id] || []).length)) return toast("Select the units to upgrade for local-only mode.");
     const pe = probeValidate(W); if (pe) return toast(pe);
@@ -291,7 +292,7 @@ function wBody(W, dry) {
     check_ids: W.checkIds, fmg_acknowledged: W.fmgAck, preflight_job: W.pfJob, review_job: W.rvJob,
     probes: probeSpecs(W), probe_baseline_s: W.probeOpts?.baseline ?? 15, probe_settle_s: W.probeOpts?.settle ?? 60,
     probe_min_outage_ms: W.probeOpts?.minOutage ?? 1000,
-    gate_stable_s: W.gate?.stable ?? 60, gate_timeout_s: W.gate?.timeout ?? 900, approve_cutover: !!W.gate?.approve };
+    gate_stable_s: W.gate?.stable ?? 60, gate_timeout_s: W.gate?.timeout ?? 900, approve_cutover: !!W.gate?.approve, avoid_failback: W.gate?.failback !== false };
 }
 
 function wReview(W, body, foot, nav, go_, c) {

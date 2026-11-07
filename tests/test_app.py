@@ -1089,6 +1089,7 @@ def _gated_pair():
     b = mock.new_state("7.4.7", ha="a-p", reboot=1, name="fgt-b", serial="FGT60FTK00000002")
     for s_ in (a, b):
         s_["peers"] = peers
+        s_["ha_cfg"]["ha-uptime-diff-margin"] = 2  # short margin: the fail-back guard has nothing to wait for
     return a, b
 
 
@@ -1268,3 +1269,44 @@ def test_rejoin_uses_the_units_own_view_when_the_primary_omits_it():
     sa.should_exit = sb.should_exit = True
     assert job.prompt is None and job.flow[0]["note"].startswith("back in the cluster · 2 units (fgt-b")
     assert any("is back in the cluster" in e["msg"] and "fgt-b (ha-peer)" in e["msg"] for e in job.log)
+
+
+def test_failback_guard_holds_the_cutover_until_the_upgraded_unit_is_old_enough():
+    units = {"A": {"name": "fgt-a", "host": "a"}, "B": {"name": "fgt-b", "host": "b"}}
+
+    def run(prio, ha, up_for, reboot_s, opts=None):
+        job = Job("u", "t")
+        job.flow_plan([{"id": "guard", "label": "Avoid fail-back"}])
+        t0 = time.time()
+        orchestrator._failback_guard(job, dict({"min_reboot_estimate_s": 0, "failback_safety_s": 0}, **(opts or {})),
+                                     "guard", units, "A", prio, ha, {"B": time.time() - up_for}, {"B": reboot_s}, False)
+        return job, time.time() - t0
+    # old primary has the higher priority, margin 4 s, B up 1 s and rebooted in 1 s: hold about 2 s
+    job, took = run({"A": 200, "B": 100}, {"margin": 4, "override": False}, 1, 1)
+    assert 1.5 <= took < 4 and job.flow[0]["note"].startswith("waited 2s") and job.open_wait is None
+    assert any("would take the primary role back" in e["msg"] for e in job.log)
+    # already old enough: no wait
+    job, took = run({"A": 200, "B": 100}, {"margin": 4, "override": False}, 10, 1)
+    assert took < 0.5 and job.flow[0]["note"].startswith("no wait needed")
+    # the upgraded unit has the higher priority: it wins anyway
+    job, took = run({"A": 100, "B": 200}, {"margin": 300, "override": False}, 0, 1)
+    assert took < 0.5 and job.flow[0]["status"] == "skipped" and "higher priority" in job.flow[0]["note"]
+    # override on: priority always decides, waiting can't help, so it says so
+    job, took = run({"A": 200, "B": 100}, {"margin": 300, "override": True}, 0, 1)
+    assert took < 0.5 and job.flow[0]["status"] == "skipped" and job.flow[0].get("attention")
+    assert any("override is on" in e["msg"].lower() for e in job.log)
+    # Stop waiting carries on and flags it
+    job = Job("u", "t")
+    job.flow_plan([{"id": "guard", "label": "Avoid fail-back"}])
+    th = threading.Thread(target=orchestrator._failback_guard, args=(
+        job, {"min_reboot_estimate_s": 0, "failback_safety_s": 0}, "guard", units, "A", {"A": 200, "B": 100},
+        {"margin": 60, "override": False}, {"B": time.time()}, {"B": 1}, False))
+    th.start()
+    for _ in range(50):
+        if job.open_wait:
+            break
+        time.sleep(0.05)
+    job.skip_wait.set()
+    th.join(5)
+    assert not th.is_alive() and job.flow[0].get("attention") and "fail-back possible" in job.flow[0]["note"]
+    assert orchestrator.failback_hold(300, 58, 176) == 96  # the lab run: 96 s more at the gate
