@@ -1,5 +1,17 @@
 [
   {
+    "version": "0.17.4",
+    "build": 32,
+    "date": "2026-11-07",
+    "title": "Record HA status when rejoin is unconfirmed",
+    "changes": [
+      {
+        "type": "improved",
+        "text": "If a service-gated upgrade can't confirm the upgraded unit is back in the cluster after 2 minutes, it records 'get system ha status' from the cluster address and from that unit (over SSH) in the job log, so it is clear afterwards whether the unit was a secondary, alone, or a second primary."
+      }
+    ]
+  },
+  {
     "version": "0.17.3",
     "build": 31,
     "date": "2026-11-07",

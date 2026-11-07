@@ -1237,7 +1237,8 @@ def test_rejoin_asks_instead_of_hanging():
     job.flow_plan([{"id": "rejoin", "label": "Rejoin cluster"}])
     job.flow_go("rejoin")
     th = threading.Thread(target=orchestrator._wait_rejoin,
-                          args=(job, t, "FGT60FTK00000002", 2, {"rejoin_timeout_s": 1.5, "poll_interval": 0.3}, False))
+                          args=(job, t, "FGT60FTK00000002", 2, {"rejoin_timeout_s": 1.5, "poll_interval": 0.3,
+                                                                     "rejoin_dump_after_s": 0.5}, False))
     th.start()
     for _ in range(100):
         if job.prompt:
@@ -1249,6 +1250,7 @@ def test_rejoin_asks_instead_of_hanging():
     th.join(5)
     sa.should_exit = sb.should_exit = True
     assert not th.is_alive() and any("Waiting for fgt-b to rejoin" in e["msg"] for e in job.log)
+    assert any("no SSH login saved" in e["msg"] for e in job.log)  # each unit's HA view is recorded when it can be
 
 
 def test_rejoin_uses_the_units_own_view_when_the_primary_omits_it():

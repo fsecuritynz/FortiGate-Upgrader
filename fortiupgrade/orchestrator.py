@@ -738,6 +738,24 @@ def _cluster_serials(job, target: dict, unit: dict | None, serial: str = "", exp
     return set(), "; ".join(tried)
 
 
+def _log_ha_status(job, members: list):
+    """Record each unit's own view of the cluster ('get system ha status' over SSH) in the job log,
+    so a rejoin that can't be confirmed can be diagnosed afterwards."""
+    for m in members:
+        if not m:
+            continue
+        if not m.get("ssh_user"):
+            job.say(f"{_label(m)}: no SSH login saved, so its 'get system ha status' can't be recorded", "warn")
+            continue
+        try:
+            with ssh_for(m) as sh:
+                out = sh.run("get system ha status", timeout=30)
+            lines = [ln.rstrip() for ln in out.splitlines() if ln.strip()][:40]
+            job.say(f"{_label(m)} ({m['host']}): get system ha status\n" + "\n".join("    " + ln for ln in lines))
+        except Exception as e:  # noqa: BLE001
+            job.say(f"{_label(m)}: could not read 'get system ha status' over SSH: {e}", "warn")
+
+
 def _wait_rejoin(job, target, serial: str, expect: int, opts: dict, dry: bool):
     """Wait until a unit that rebooted is back in the cluster. Works while the units run different
     firmware (where ha-checksums fails); after rejoin_timeout_s it asks rather than waiting on."""
@@ -749,6 +767,7 @@ def _wait_rejoin(job, target, serial: str, expect: int, opts: dict, dry: bool):
     t0 = time.time()
     limit = float(opts.get("rejoin_timeout_s", 900))
     last = None
+    dumped = False
     job.begin_wait(f"{who} to rejoin the cluster")
     try:
         while time.time() - t0 < limit:
@@ -768,6 +787,9 @@ def _wait_rejoin(job, target, serial: str, expect: int, opts: dict, dry: bool):
             if seen != last:
                 job.say(f"Waiting for {who} to rejoin: {seen}")
                 last = seen
+            if not dumped and time.time() - t0 >= float(opts.get("rejoin_dump_after_s", 120)):
+                dumped = True
+                _log_ha_status(job, [target["members"][0], unit])
             job.flow_note(f"{int(time.time() - t0)}s · {seen}"[:110])
             job.skip_wait.wait(float(opts.get("poll_interval", 15)))
     finally:
