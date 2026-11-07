@@ -1249,3 +1249,20 @@ def test_rejoin_asks_instead_of_hanging():
     th.join(5)
     sa.should_exit = sb.should_exit = True
     assert not th.is_alive() and any("Waiting for fgt-b to rejoin" in e["msg"] for e in job.log)
+
+
+def test_rejoin_uses_the_units_own_view_when_the_primary_omits_it():
+    a, b = _gated_pair()
+    a["peers"] = a["peers"][:1]  # the older-firmware primary lists only itself
+    (pa, sa), (pb, sb) = serve(a), serve(b)  # the upgraded unit lists both
+    t = storage.save_target({"name": "pair", "type": "fgcp", "members": [
+        {"name": "cluster", "host": "127.0.0.1", "port": pa, "scheme": "http"},
+        {"name": "fgt-b", "host": "127.0.0.1", "port": pb, "scheme": "http"}]}, {str(i): {"token": mock.TOKEN} for i in range(2)})
+    job = Job("u", "t")
+    job.state["unit_map"] = {"FGT60FTK00000002": t["members"][1]}
+    job.flow_plan([{"id": "rejoin", "label": "Rejoin cluster"}])
+    job.flow_go("rejoin")
+    orchestrator._wait_rejoin(job, t, "FGT60FTK00000002", 2, {"rejoin_timeout_s": 5, "poll_interval": 0.3}, False)
+    sa.should_exit = sb.should_exit = True
+    assert job.prompt is None and job.flow[0]["note"].startswith("back in the cluster · 2 units (fgt-b")
+    assert any("is back in the cluster" in e["msg"] and "fgt-b (ha-peer)" in e["msg"] for e in job.log)

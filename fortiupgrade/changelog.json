@@ -1,5 +1,21 @@
 [
   {
+    "version": "0.17.3",
+    "build": 31,
+    "date": "2026-11-07",
+    "title": "Rejoin check asks every source",
+    "changes": [
+      {
+        "type": "fixed",
+        "text": "Service-gated rejoin stopped at the first source that answered. A 7.6.8 primary's HA peer list can leave out a peer that runs 8.0.2, so the upgraded unit looked absent. The check now also asks the upgraded unit itself and 'get system ha status' over SSH, and only waits on when none of them shows the unit back with all units."
+      },
+      {
+        "type": "improved",
+        "text": "When the unit isn't seen back after 15 minutes, the question explains the risk: if it isn't a secondary, upgrading the primary next takes the whole cluster down while it reboots."
+      }
+    ]
+  },
+  {
     "version": "0.17.2",
     "build": 30,
     "date": "2026-11-07",

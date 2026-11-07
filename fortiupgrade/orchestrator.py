@@ -693,18 +693,29 @@ def _serials_via_api(m: dict) -> tuple[set[str], str]:
     return set(), ", ".join(errs)
 
 
-def _cluster_serials(job, target: dict, unit: dict | None) -> tuple[set[str], str]:
-    """Who is in the cluster right now, and how we know: the cluster address, then the unit's own
-    address, then 'get system ha status' over SSH."""
+def _cluster_serials(job, target: dict, unit: dict | None, serial: str = "", expect: int = 0) -> tuple[set[str], str]:
+    """Who is in the cluster right now, and how we know. Every source is asked until one shows the
+    unit back with all units: the cluster address, the unit's own address, then 'get system ha
+    status' over SSH. A primary on older firmware can leave a peer on newer firmware out of its
+    HA peer list, so one source not seeing the unit isn't taken as the answer.
+    Returns the confirming view, or the most complete view seen."""
+    views: list[tuple[set[str], str]] = []
     tried = []
+
+    def done(sns):
+        return serial and serial in sns and len(sns) >= expect
+
     for who, m in (("cluster address", target["members"][0]), (_label(unit) if unit else "", unit)):
         if not m:
             continue
         try:
             sns, how = _serials_via_api(m)
             if sns:
-                return sns, f"{who} ({how})"
-            tried.append(f"{who}: {how}")
+                views.append((sns, f"{who} ({how})"))
+                if done(sns) or not serial:
+                    return views[-1]
+            else:
+                tried.append(f"{who}: {how}")
         except Exception as e:  # noqa: BLE001
             tried.append(f"{who}: {str(e)[:60]}")
     m = target["members"][0]
@@ -713,10 +724,17 @@ def _cluster_serials(job, target: dict, unit: dict | None) -> tuple[set[str], st
             with ssh_for(m) as sh:
                 got = parse_ha_status_members(sh.run("get system ha status", timeout=30))
             if got:
-                return set(got), "get system ha status over SSH"
-            tried.append("SSH: no Primary/Secondary lines")
+                views.append((set(got), "get system ha status over SSH"))
+                if done(set(got)):
+                    return views[-1]
+            else:
+                tried.append("SSH: no Primary/Secondary lines")
         except Exception as e:  # noqa: BLE001
             tried.append(f"SSH: {str(e)[:60]}")
+    if views:
+        sns, how = max(views, key=lambda v: (serial in v[0], len(v[0])))
+        others = [h for s_, h in views if h != how]
+        return sns, how + (f"; also {', '.join(others)}" if others else "")
     return set(), "; ".join(tried)
 
 
@@ -740,7 +758,7 @@ def _wait_rejoin(job, target, serial: str, expect: int, opts: dict, dry: bool):
                 job.flow_note("stopped waiting")
                 job._flow_attention()
                 return
-            sns, how = _cluster_serials(job, target, unit)
+            sns, how = _cluster_serials(job, target, unit, serial, expect)
             n = len(sns)
             if serial in sns and n >= expect:
                 job.say(f"{who} is back in the cluster: {n} units seen by the {how}", "ok")
@@ -757,7 +775,8 @@ def _wait_rejoin(job, target, serial: str, expect: int, opts: dict, dry: bool):
     job._flow_attention()
     job.flow_note(f"not seen back after {int(limit)}s · {last}"[:110])
     job.wait_approval(f"{who} runs the new firmware but hasn't been seen back in the cluster after {int(limit // 60)} min "
-                      f"({last}). Check System > HA on the cluster. Carry on anyway?")
+                      f"({last}). Check 'get system ha status' on the primary: if it isn't listed as a secondary, "
+                      "upgrading the primary next takes the whole cluster down while it reboots. Carry on anyway?")
 
 
 def _service_gate(job, opts: dict, sid: str, before: str, dry: bool):
