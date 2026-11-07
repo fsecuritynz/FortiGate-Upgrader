@@ -123,6 +123,8 @@ def make_app(state: dict) -> FastAPI:
     def ha_peer():
         if state["ha_cfg"]["mode"] == "standalone":
             return wrap([])
+        if state.get("peers"):  # a real two-unit cluster: both units report the same peers
+            return wrap(state["peers"])
         return wrap([{"serial_no": state["serial"], "hostname": state["name"], "priority": state["ha_cfg"].get("priority", 200),
                       "vcluster_id": 0, "primary": True},
                      {"serial_no": state["serial"][:-1] + "2", "hostname": state["name"] + "-b", "priority": 100,
@@ -463,6 +465,7 @@ if __name__ == "__main__":
     ap.add_argument("--if-extra", default="", help='JSON per-interface overrides, e.g. {"port1": {"management-ip": "..."}}')
     ap.add_argument("--priority", type=int, default=200)
     ap.add_argument("--unlicensed", default="", help="comma-separated licence keys to report as not licensed, e.g. antivirus,forticare")
+    ap.add_argument("--peers", default="", help="serial:hostname:priority,... both units of a two-unit cluster (first is primary)")
     ap.add_argument("--bad-logs", action="store_true", help="add conserve-mode, crash and HA heartbeat events to the logs")
     a = ap.parse_args()
     st = new_state(a.version, a.ha, a.vdom, a.fgsp, a.name, a.serial, a.reboot_seconds, a.brk, a.fmg)
@@ -472,6 +475,9 @@ if __name__ == "__main__":
         st["if_extra"] = _json.loads(a.if_extra)
     st["ha_cfg"]["priority"] = a.priority
     st["unlicensed"] = [x for x in a.unlicensed.split(",") if x]
+    if a.peers:
+        st["peers"] = [{"serial_no": sn, "hostname": hn, "priority": int(pr), "primary": i == 0}
+                       for i, (sn, hn, pr) in enumerate(x.split(":") for x in a.peers.split(","))]
     if a.bad_logs:
         st["extra_events"] = BAD_EVENTS
     if (a.model or "").upper().startswith("VM"):

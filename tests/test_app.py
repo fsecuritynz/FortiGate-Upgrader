@@ -921,3 +921,35 @@ def test_reveal_stored_api_token():
     assert c.get(f"/api/targets/{t['id']}/members/{m0['id']}/token").status_code == 405    # POST only
     assert TestClient(server.app).post(f"/api/targets/{t['id']}/members/{m0['id']}/token").status_code == 401
     assert "tok-abc123" not in c.get("/api/targets").text
+
+
+def test_overview_reads_each_ha_unit_through_its_own_address(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from fortiupgrade import server
+    peers = [{"serial_no": "FGVM04TM26000001", "hostname": "fgt-a", "priority": 200, "primary": True},
+             {"serial_no": "FGVM04TM26000002", "hostname": "fgt-b", "priority": 100, "primary": False}]
+    sa = mock.new_state("7.6.8", ha="a-p", name="fgt-a", serial="FGVM04TM26000001")
+    sb = mock.new_state("7.6.8", ha="a-p", name="fgt-b", serial="FGVM04TM26000002")
+    sb["version"] = "7.6.7"
+    for s_ in (sa, sb):
+        s_["peers"] = peers
+    (pa, srva), (pb, srvb) = serve(sa), serve(sb)
+    cl, H = TestClient(server.app), {"x-auth": server.TOKEN}
+    # saved with unit A's address only: unit B's own address is found (here as if read over SSH) and read directly
+    t = add_target("fgcp", [pa], name="pair")
+    monkeypatch.setattr(server, "cluster_units", lambda t_, refresh=False: {"units": [
+        {"serial": "FGVM04TM26000002", "own": [{"addr": "127.0.0.1", "kind": "dedicated HA management", "access": []}],
+         "mgmt": {"admin_sport": pb}, "source": "ssh"}], "notes": []})
+    ov = cl.get(f"/api/targets/{t['id']}/overview", headers=H).json()
+    u = {x["serial"]: x for x in ov["units"]}
+    assert [x["unit_role"] for x in ov["units"]] == ["primary", "secondary"]
+    assert u["FGVM04TM26000002"]["ok"] and u["FGVM04TM26000002"]["hostname"] == "fgt-b"
+    assert u["FGVM04TM26000002"]["version"] == "7.6.7" and u["FGVM04TM26000002"]["discovered"]
+    assert "over SSH" in u["FGVM04TM26000002"]["reached"] and u["FGVM04TM26000002"]["licences"]
+    assert u["FGVM04TM26000001"]["unit_priority"] == 200 and len(ov["members"]) == 1
+    # no address known for unit B: it is listed from what the primary reports, with a note
+    monkeypatch.setattr(server, "cluster_units", lambda t_, refresh=False: {"units": [], "notes": []})
+    ov = cl.get(f"/api/targets/{t['id']}/overview", headers=H).json()
+    assert not ov["units"][1]["ok"] and ov["units"][1]["hostname"] == "fgt-b" and "no address of its own" in ov["unit_notes"][0]
+    srva.should_exit = srvb.should_exit = True

@@ -424,3 +424,8 @@ table.rv-t td { vertical-align: top; }
 .tok-in button svg { width: 14px; height: 14px; }
 .tok-show { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
 .tok-val { flex: 1; min-width: 0; font-size: 12px; padding: 4px 6px; background: var(--panel-head); border: 1px solid var(--rule); border-radius: 3px; overflow-wrap: anywhere; user-select: all; color: var(--text); }
+
+/* HA cluster units table */
+table.cu-t tr.sel td { background: var(--info-bg); }
+table.cu-t td { white-space: nowrap; }
+.seg button.on .hint { color: inherit; opacity: .85; }

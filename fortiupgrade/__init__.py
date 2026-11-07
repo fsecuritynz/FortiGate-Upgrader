@@ -1,7 +1,7 @@
 # Bump both on every release and add the matching entry at the top of changelog.json
 # (tests/test_app.py checks they agree).
-__version__ = "0.13.1"
-__build__ = 23
+__version__ = "0.14.0"
+__build__ = 24
 APP_NAME = "FortiGate Upgrader"
 
 

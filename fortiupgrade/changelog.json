@@ -1,5 +1,29 @@
 [
   {
+    "version": "0.14.0",
+    "build": 24,
+    "date": "2026-11-07",
+    "title": "Every HA unit on the dashboard",
+    "changes": [
+      {
+        "type": "new",
+        "text": "An HA cluster's dashboard reads every unit through its own address (its saved unit address, management-ip or dedicated HA management interface) and shows each unit's hostname, serial number, model, VM series, firmware, licences, resources, interfaces and ports, not just the unit that was polled."
+      },
+      {
+        "type": "new",
+        "text": "Cluster units table: role, HA priority, serial, model, firmware, CPU, memory, sessions, FortiCare and address for every unit side by side, with a warning when the units run different firmware. Pick a unit to see its full details."
+      },
+      {
+        "type": "new",
+        "text": "A unit with no saved address is read through the own address found from the primary (over SSH), using the device's API token, which HA keeps the same on every unit. A unit that can't be reached is still listed from what the primary reports, with what to add."
+      },
+      {
+        "type": "improved",
+        "text": "The HA cluster panel shows each unit's real port link state when that unit can be read."
+      }
+    ]
+  },
+  {
     "version": "0.13.1",
     "build": 23,
     "date": "2026-11-07",

@@ -423,72 +423,75 @@ def latest(tid: str, member: str = ""):
     return None
 
 
+def _member_overview(m):
+    """Live dashboard data of one address: identity, licences, resources, interfaces, HA."""
+    out = {"member": m["id"], "name": m.get("name") or m["host"], "host": m["host"], "port": m.get("port", 443)}
+    try:
+        with orchestrator.client_for(m, timeout=15) as c:
+            info = c.discover()
+            out.update(ok=True, **info.to_dict())
+            ctx = Ctx(client=c, vdom_mode=info.vdom_mode)
+            for key, fn in (("licences", c_license), ("resources", c_resources), ("ha", c_ha)):
+                try:
+                    out[key] = fn(ctx, None)
+                except Exception as e:  # noqa: BLE001
+                    out[key + "_error"] = str(e)
+            if is_vm(info.model, info.serial):
+                lic_vm, vmi = {}, {}
+                try:
+                    lic_vm = (c.monitor("license/status") or {}).get("vm") or {}
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    vmi = c.monitor("system/vm-information") or {}
+                    vmi = vmi[0] if isinstance(vmi, list) and vmi else vmi
+                    vmi = vmi if isinstance(vmi, dict) else {}
+                except Exception:  # noqa: BLE001
+                    pass
+                out["vm"] = vm_series(info.model, info.serial, lic_vm, vmi)
+                out["vm_raw"] = {"license": lic_vm, "vm_information": vmi}
+            try:
+                out["interfaces"] = c_interfaces(ctx, None if not info.vdom_mode else None)
+            except Exception as e:  # noqa: BLE001
+                out["interfaces_error"] = str(e)
+            try:
+                out["ports"] = physical_ports(ctx)
+            except Exception as e:  # noqa: BLE001
+                out["ports_error"] = str(e)
+            try:
+                out["mgmt"] = hainfo.mgmt_info(c)
+                out["ha_info"] = hainfo.ha_info(c)
+                out["address"] = hainfo.address_role(m["host"], out["mgmt"], info.ha_mode)
+            except Exception as e:  # noqa: BLE001
+                out["ha_error"] = str(e)
+            try:
+                hacfg = c.cmdb("system/ha") or {}
+                out["ha_config"] = {k: hacfg.get(k) for k in ("mode", "group-name", "group-id", "priority",
+                                                              "override", "upgrade-mode",
+                                                              "uninterruptible-upgrade") if k in hacfg}
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                fw = c.monitor("system/firmware") or {}
+                cur = fw.get("current") or {}
+                out["release"] = {"maturity": cur.get("maturity"), "release_type": cur.get("release-type"),
+                                  "notes": cur.get("notes")}
+                newer = [a for a in fw.get("available") or []
+                         if FosVersion.parse(a.get("version")) > info.version]
+                out["newer"] = sorted({str(FosVersion.parse(a["version"])) for a in newer},
+                                      key=FosVersion.parse, reverse=True)
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception as e:  # noqa: BLE001
+        out.update(ok=False, error=str(e))
+    return out
+
+
 @app.get("/api/targets/{tid}/overview")
 def overview(tid: str):
     """Live dashboard data for every member: identity, licences, resources, interfaces, HA."""
     t = _target(tid)
-
-    def one(m):
-        out = {"member": m["id"], "name": m.get("name") or m["host"], "host": m["host"], "port": m.get("port", 443)}
-        try:
-            with orchestrator.client_for(m, timeout=15) as c:
-                info = c.discover()
-                out.update(ok=True, **info.to_dict())
-                ctx = Ctx(client=c, vdom_mode=info.vdom_mode)
-                for key, fn in (("licences", c_license), ("resources", c_resources), ("ha", c_ha)):
-                    try:
-                        out[key] = fn(ctx, None)
-                    except Exception as e:  # noqa: BLE001
-                        out[key + "_error"] = str(e)
-                if is_vm(info.model, info.serial):
-                    lic_vm, vmi = {}, {}
-                    try:
-                        lic_vm = (c.monitor("license/status") or {}).get("vm") or {}
-                    except Exception:  # noqa: BLE001
-                        pass
-                    try:
-                        vmi = c.monitor("system/vm-information") or {}
-                        vmi = vmi[0] if isinstance(vmi, list) and vmi else vmi
-                        vmi = vmi if isinstance(vmi, dict) else {}
-                    except Exception:  # noqa: BLE001
-                        pass
-                    out["vm"] = vm_series(info.model, info.serial, lic_vm, vmi)
-                    out["vm_raw"] = {"license": lic_vm, "vm_information": vmi}
-                try:
-                    out["interfaces"] = c_interfaces(ctx, None if not info.vdom_mode else None)
-                except Exception as e:  # noqa: BLE001
-                    out["interfaces_error"] = str(e)
-                try:
-                    out["ports"] = physical_ports(ctx)
-                except Exception as e:  # noqa: BLE001
-                    out["ports_error"] = str(e)
-                try:
-                    out["mgmt"] = hainfo.mgmt_info(c)
-                    out["ha_info"] = hainfo.ha_info(c)
-                    out["address"] = hainfo.address_role(m["host"], out["mgmt"], info.ha_mode)
-                except Exception as e:  # noqa: BLE001
-                    out["ha_error"] = str(e)
-                try:
-                    hacfg = c.cmdb("system/ha") or {}
-                    out["ha_config"] = {k: hacfg.get(k) for k in ("mode", "group-name", "group-id", "priority",
-                                                                  "override", "upgrade-mode",
-                                                                  "uninterruptible-upgrade") if k in hacfg}
-                except Exception:  # noqa: BLE001
-                    pass
-                try:
-                    fw = c.monitor("system/firmware") or {}
-                    cur = fw.get("current") or {}
-                    out["release"] = {"maturity": cur.get("maturity"), "release_type": cur.get("release-type"),
-                                      "notes": cur.get("notes")}
-                    newer = [a for a in fw.get("available") or []
-                             if FosVersion.parse(a.get("version")) > info.version]
-                    out["newer"] = sorted({str(FosVersion.parse(a["version"])) for a in newer},
-                                          key=FosVersion.parse, reverse=True)
-                except Exception:  # noqa: BLE001
-                    pass
-        except Exception as e:  # noqa: BLE001
-            out.update(ok=False, error=str(e))
-        return out
+    one = _member_overview
 
     with ThreadPoolExecutor(max_workers=8) as ex:
         members = list(ex.map(one, t["members"]))
@@ -497,7 +500,87 @@ def overview(tid: str):
         _INV[tid] = (time.time(), {k: v for k, v in ok.items() if k in (
             "ok", "hostname", "serial", "model", "version", "build", "vdom_mode", "vdoms", "ha_mode", "fgsp",
             "model_code", "management")})
-    return {"target": tid, "members": members}
+    units, unit_notes = _cluster_unit_overviews(t, members)
+    return {"target": tid, "members": members, "units": units, "unit_notes": unit_notes}
+
+
+def _own_addresses(x: dict) -> list[str]:
+    ded = [i.get("interface") for i in ((x.get("ha_info") or {}).get("ha_mgmt_interfaces") or []) if i.get("interface")]
+    return [a["addr"] for a in hainfo.unit_addresses(x.get("mgmt") or {}, True, ded)]
+
+
+def _cluster_unit_overviews(t: dict, members: list[dict]) -> tuple[list[dict], list[str]]:
+    """For an FGCP cluster: one entry per physical unit, each read through an address that reaches
+    that unit itself (its management-ip or dedicated HA management interface) when there is one.
+
+    Unit addresses saved on the device are used first. For a unit without one, its own address is
+    found with cluster_units() (the primary's interfaces, or over SSH from the primary) and read
+    with the device's API token, which HA keeps the same on every unit."""
+    src = next((x for x in members if x.get("ok") and x.get("ha_mode") in ("a-p", "a-a")
+                and len((x.get("ha_info") or {}).get("peers") or []) >= 2), None)
+    if not src:
+        return [], []
+    peers = src["ha_info"]["peers"]
+    notes: list[str] = []
+    by_serial: dict[str, dict] = {}
+    primary = next((p["serial"] for p in peers if p.get("primary")), None)
+    first = t["members"][0]["id"]
+    for x in members:
+        if not x.get("ok"):
+            continue
+        # a unit's own address: listed as its management-ip / HA management address, any extra
+        # (unit) address of a cluster, or anything that reaches a secondary (secondaries never
+        # answer on the shared cluster address)
+        own = x["host"] in _own_addresses(x) or (t["type"] == "fgcp" and x["member"] != first) or x["serial"] != primary
+        cur = by_serial.get(x["serial"])
+        if not cur or (own and not cur["_own"]):
+            by_serial[x["serial"]] = dict(x, _own=own, reached=("its own address " if own else "the cluster address ") + x["host"])
+    missing = [p for p in peers if p["serial"] not in by_serial]
+    if missing:
+        try:
+            cu = cluster_units(t)
+        except Exception as e:  # noqa: BLE001
+            cu = {"units": []}
+            notes.append(f"Could not look up the other units' addresses: {e}")
+        base = next((m for m in t["members"] if any(x.get("ok") and x["member"] == m["id"] for x in members)), t["members"][0])
+        jobs_ = []
+        for p in missing:
+            u = next((u for u in cu["units"] if u["serial"] == p["serial"]), None)
+            own = (u or {}).get("own") or []
+            if not own:
+                notes.append(f"{p['hostname'] or p['serial']}: no address of its own is known, so only what the primary "
+                             "reports about it is shown. Add its management-ip or dedicated HA management address on the "
+                             "device, or SSH credentials so the app can read it from the primary.")
+                continue
+            a = own[0]
+            port = ((u or {}).get("mgmt") or {}).get("admin_sport") or base.get("port") or 443
+            jobs_.append((p, u, a, dict(base, host=a["addr"], port=port, name=p["hostname"] or p["serial"])))
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            got = list(ex.map(lambda j: _member_overview(j[3]), jobs_))
+        for (p, u, a, m), r in zip(jobs_, got):
+            r["member"] = "unit:" + p["serial"]
+            if not r.get("ok"):
+                notes.append(f"{p['hostname'] or p['serial']}: its own address {a['addr']} did not answer: {r.get('error')}")
+                continue
+            if r.get("serial") != p["serial"]:
+                notes.append(f"{p['hostname'] or p['serial']}: {a['addr']} answered as {r.get('serial')}, not this unit.")
+                continue
+            r.update(discovered=True, _own=True,
+                     reached=f"its own address {a['addr']} ({a['kind']}"
+                             f"{', found over SSH from the primary' if (u or {}).get('source') == 'ssh' else ''})")
+            by_serial[p["serial"]] = r
+    units = []
+    for p in peers:
+        x = by_serial.get(p["serial"])
+        if x is None:
+            x = {"ok": False, "member": "unit:" + p["serial"], "serial": p["serial"], "hostname": p.get("hostname") or "",
+                 "name": p.get("hostname") or p["serial"], "host": "", "error": "no address reaches this unit",
+                 "model": src.get("model"), "reached": None}
+        x = {k: v for k, v in x.items() if k != "_own"}
+        x.update(unit_role="primary" if p.get("primary") else "secondary", unit_priority=p.get("priority"),
+                 unit_sessions=p.get("sessions"), unit_cpu=p.get("cpu"), unit_mem=p.get("mem"))
+        units.append(x)
+    return units, notes
 
 
 @app.get("/api/targets/{tid}/known-issues")

@@ -311,16 +311,46 @@ function portsFromInterfaces(ifs) {
     speed: x.Speed, access: x["Admin access"], member_of: "", media: "" }));
 }
 
+// every unit of an HA cluster side by side; click a row to show that unit below
+function clusterUnitsPanel(units, notes, m) {
+  const pct = (v) => { const n = num(v); return v == null || v === "" ? "—" : `<span class="${n >= 80 ? "b-warn badge" : ""}">${esc(String(v).includes("%") ? v : n + " %")}</span>`; };
+  const lic = (u, svc) => (u.licences || []).find((l) => l.Service === svc)?.Status;
+  const rows = units.map((u) => {
+    const cpu = metric(u.resources, "CPU usage") ?? u.unit_cpu, mem = metric(u.resources, "Memory usage") ?? u.unit_mem;
+    const sess = metric(u.resources, "IPv4 sessions") ?? u.unit_sessions;
+    const fc = lic(u, "FortiCare support");
+    return `<tr class="click ${u.member === m.member ? "sel" : ""}" data-m="${esc(u.member)}">
+      <td><b>${esc(u.hostname || u.name)}</b>${u.ok ? "" : ` ${badge("not read directly", "warn")}`}</td>
+      <td>${u.unit_role === "primary" ? badge("Primary", "up") : badge("Secondary", "info")}</td><td>${esc(u.unit_priority ?? "—")}</td>
+      <td class="mono">${esc(u.serial || "—")}</td><td>${esc(u.model || "—")}${u.vm?.series ? ` <span class="chip ver">${esc(u.vm.series)}</span>` : ""}</td>
+      <td>${u.version ? `<span class="chip ver">v${esc(u.version)}</span> <span class="hint">b${esc(u.build)}</span>` : "—"}</td>
+      <td>${pct(cpu)}</td><td>${pct(mem)}</td><td>${esc(sess ?? "—")}</td>
+      <td>${fc ? (["Registered", "Licensed", "Valid"].includes(fc) ? badge(fc, "up") : badge(fc, "down")) : "—"}</td>
+      <td class="mono small">${u.host ? esc(u.host) : '<span class="hint">—</span>'}${u.discovered ? ` <span class="hint" style="font-family:inherit" title="${esc(u.reached || "")}">found</span>` : ""}</td></tr>`;
+  }).join("");
+  const vers = new Set(units.filter((u) => u.version).map((u) => `${u.version} b${u.build}`));
+  const warn = vers.size > 1 ? `<div class="banner crit" style="margin:8px 14px">The units run different firmware: ${[...vers].map(esc).join(", ")}.</div>` : "";
+  return `<div class="panel spanall"><div class="ph"><span class="ttl">${icon("devices")} Cluster units</span><span class="tools hint">each unit read through its own address where one is known · click a unit to show its details</span></div>
+    ${warn}<div class="tablewrap"><table class="cu-t"><thead><tr><th>Unit</th><th>Role</th><th>Priority</th><th>Serial number</th><th>Model</th><th>Firmware</th><th>CPU</th><th>Memory</th><th>Sessions</th><th>FortiCare</th><th>Address</th></tr></thead><tbody>${rows}</tbody></table></div>
+    ${notes.length ? `<div class="pb" style="border-top:1px solid var(--rule)">${notes.map((n) => `<div class="hint">${esc(n)}</div>`).join("")}</div>` : ""}</div>`;
+}
+
 async function devOverview(t, c) {
   c.innerHTML = '<div class="empty"><span class="spin"></span> Reading the device…</div>';
   const [ov, snaps, ups] = await Promise.all([api(`/targets/${t.id}/overview`), api(`/targets/${t.id}/snapshots`).catch(() => []), api(`/jobs?target_id=${t.id}&kind=upgrade`).catch(() => [])]);
   const ms = ov.members;
-  let cur = ms.find((m) => m.member === S.ovMember) || ms.find((m) => m.ok) || ms[0];
+  // an HA cluster is shown per physical unit, each read through its own address where there is one
+  const units = (ov.units || []).length >= 2 ? ov.units : [];
+  const views = units.length ? units : ms;
+  let cur = views.find((m) => m.member === S.ovMember) || views.find((m) => m.ok && m.unit_role === "primary") || views.find((m) => m.ok) || views[0];
   const draw = () => {
     const m = cur;
-    const pick = ms.length > 1 ? `<div class="row" style="margin-bottom:12px"><span class="hint">Cluster member</span><div class="seg">${ms.map((x) => `<button data-m="${x.member}" class="${x.member === m.member ? "on" : ""}">${x.ok ? "" : "⚠ "}${esc(x.hostname || x.name)}</button>`).join("")}</div></div>` : "";
+    const pick = units.length ? `<div class="row" style="margin-bottom:12px;flex-wrap:wrap"><span class="hint">HA unit</span><div class="seg">${units.map((x) => `<button data-m="${esc(x.member)}" class="${x.member === m.member ? "on" : ""}">${x.ok ? "" : "⚠ "}${esc(x.hostname || x.name)} <span class="hint">${x.unit_role === "primary" ? "primary" : "secondary"}</span></button>`).join("")}</div>
+        ${m.reached ? `<span class="hint">read through ${esc(m.reached)}</span>` : ""}</div>`
+      : ms.length > 1 ? `<div class="row" style="margin-bottom:12px"><span class="hint">Cluster member</span><div class="seg">${ms.map((x) => `<button data-m="${x.member}" class="${x.member === m.member ? "on" : ""}">${x.ok ? "" : "⚠ "}${esc(x.hostname || x.name)}</button>`).join("")}</div></div>` : "";
+    const unitsPanel = units.length ? clusterUnitsPanel(units, ov.unit_notes || [], m) : "";
     if (!m.ok) {
-      c.innerHTML = pick + `<div class="banner crit"><b>${esc(m.name)} (${esc(m.host)}) is unreachable.</b><br>${esc(m.error)}</div>` + (snaps[0] ? `<div class="hint">Last data collected ${esc(snaps[0].taken_at.replace("T", " "))}: see the Current status tab.</div>` : "");
+      c.innerHTML = pick + unitsPanel + `<div class="banner ${m.member?.startsWith("unit:") ? "warn" : "crit"}"><b>${esc(m.name)}${m.host ? ` (${esc(m.host)})` : ""} ${m.host ? "is unreachable" : "can't be read directly"}.</b><br>${esc(m.error)}</div>` + (snaps[0] ? `<div class="hint">Last data collected ${esc(snaps[0].taken_at.replace("T", " "))}: see the Current status tab.</div>` : "");
       bindPick(); return;
     }
     const lic = m.licences || [];
@@ -343,10 +373,10 @@ async function devOverview(t, c) {
     if ((m.newer || []).length) notices.push(["info", `Newer firmware available from FortiGuard: ${m.newer.slice(0, 4).map((v) => "v" + v).join(", ")}${m.newer.length > 4 ? "…" : ""}.`]);
     const lastSnap = snaps.find((s) => s.member_id === m.member) || snaps[0];
     const lastUp = ups[0];
-    c.innerHTML = pick + `<div class="widgets">
+    c.innerHTML = pick + `<div class="widgets">${unitsPanel}
       <div class="panel fit"><div class="ph"><span class="ttl">System information</span><span class="tools"><button class="small" id="rf">${icon("refresh")}Refresh</button></span></div><div class="kv">
-        <div>Hostname</div><div><b>${esc(m.hostname)}</b></div>
-        <div>IP address</div><div class="mono">${esc(m.host)}${m.port && m.port !== 443 ? ":" + m.port : ""}</div>
+        <div>Hostname</div><div><b>${esc(m.hostname)}</b>${m.unit_role ? " " + (m.unit_role === "primary" ? badge("Primary", "up") : badge("Secondary", "info")) : ""}</div>
+        <div>IP address</div><div class="mono">${esc(m.host)}${m.port && m.port !== 443 ? ":" + m.port : ""}${m.reached ? ` <span class="hint" style="font-family:inherit">(${esc(/^its own/.test(m.reached) ? "this unit's own address" : "cluster address")})</span>` : ""}</div>
         <div>Model</div><div>${esc(m.model)} <span class="hint">(${esc(m.model_code)})</span></div>
         <div>Serial number</div><div class="mono">${esc(m.serial)}</div>
         ${m.vm ? `<div>VM series</div><div>${m.vm.series ? `<span class="chip ver">${esc(m.vm.series)}</span>` : `<span class="hint">not reported</span>`}${m.vm.licence ? ` ${esc(m.vm.licence)}` : ""}${m.vm.basis ? ` <span class="hint">(from ${esc(m.vm.basis)})</span>` : ""}</div>
@@ -357,7 +387,7 @@ async function devOverview(t, c) {
         <div>Management</div><div>${m.management?.managed ? badge("FortiManager " + m.management.fmg, "warn") : esc(m.management?.summary || "Local")}</div>
         ${m.ha_mode !== "standalone" && (hc["upgrade-mode"] || hc["uninterruptible-upgrade"]) ? `<div>HA upgrade mode</div><div>${esc(hc["upgrade-mode"] || ("uninterruptible-upgrade " + hc["uninterruptible-upgrade"]))}</div>` : ""}
       </div></div>
-      ${haPairPanel(t, m, ms) || `<div class="panel span2"><div class="ph"><span class="ttl">${esc(m.model)}</span><span class="tools hint">${(m.ports || portsFromInterfaces(m.interfaces)).length} physical ports</span></div><div class="faceplate">${faceplate(m.model, m.model_code, m.ports || portsFromInterfaces(m.interfaces))}</div></div>`}
+      ${haPairPanel(t, units.find((u) => u.ok && u.unit_role === "primary" && u.ha_info) || m, [...units, ...ms]) || `<div class="panel span2"><div class="ph"><span class="ttl">${esc(m.model)}</span><span class="tools hint">${(m.ports || portsFromInterfaces(m.interfaces)).length} physical ports</span></div><div class="faceplate">${faceplate(m.model, m.model_code, m.ports || portsFromInterfaces(m.interfaces))}</div></div>`}
       <div class="panel"><div class="ph"><span class="ttl">Licences</span><span class="tools"><button class="small" id="licAll">Show all ${lic.length}</button></span></div>
         <div class="tiles"><div class="tile good"><div class="n">${active.length}</div><div class="l">Active</div></div><div class="tile ${soon.length ? "warn" : ""}"><div class="n">${soon.length}</div><div class="l">Expire ≤ 30 days</div></div><div class="tile ${expired.length ? "bad" : ""}"><div class="n">${expired.length}</div><div class="l">Expired</div></div></div>
         <div class="pb flush" style="border-top:1px solid var(--rule)" id="licT"></div></div>
@@ -379,7 +409,7 @@ async function devOverview(t, c) {
     const tu = $("#toUp"); if (tu) tu.onclick = () => go("device", [t.id, "upgrades"]);
     bindPick();
   };
-  const bindPick = () => $$("[data-m]", c).forEach((b) => b.onclick = () => { S.ovMember = b.dataset.m; cur = ms.find((x) => x.member === b.dataset.m); draw(); });
+  const bindPick = () => $$("[data-m]", c).forEach((b) => b.onclick = () => { S.ovMember = b.dataset.m; cur = views.find((x) => x.member === b.dataset.m); draw(); });
   draw();
 }
 
