@@ -1,5 +1,25 @@
 [
   {
+    "version": "0.17.1",
+    "build": 29,
+    "date": "2026-11-07",
+    "title": "Upgrades no longer hang after the image is sent",
+    "changes": [
+      {
+        "type": "fixed",
+        "text": "An upgrade could stay on Transfer image for up to 30 minutes: an HA primary can accept the image and go straight on to upgrading the cluster without ever answering the upload request. The request now runs in the background; once the image has been sent, the app checks the device every 10 s, and a unit that stops answering because it is rebooting, a unit that left the cluster, or a unit reporting the new version counts as the install having started. The same applies to FortiGuard downloads."
+      },
+      {
+        "type": "new",
+        "text": "Transfer image shows the upload progress (percent and MB sent), then how long it has been waiting for the FortiGate to accept the image. Stop waiting lets you continue; the reboot wait still confirms the new version. If the device neither answers nor starts installing within 15 minutes, the upgrade stops with a clear message."
+      },
+      {
+        "type": "fixed",
+        "text": "SSH logins to an HA unit timed out although they had reached the prompt: FortiOS shows the HA role in the prompt (fgt-vm04-a(Primary) #), which wasn't recognised. CLI checks, configuration reads over SSH and reading the other unit's address work again on clusters."
+      }
+    ]
+  },
+  {
     "version": "0.17.0",
     "build": 28,
     "date": "2026-11-07",

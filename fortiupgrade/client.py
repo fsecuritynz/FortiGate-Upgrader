@@ -55,6 +55,29 @@ TRANSIENT = (httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError, htt
 RETRY_DELAYS = (2, 5, 10)
 
 
+class _Counting:
+    """File wrapper that reports how much of it has been read (i.e. sent)."""
+
+    def __init__(self, fh, cb):
+        self._fh, self._cb, self.sent = fh, cb, 0
+
+    def read(self, n=-1):
+        b = self._fh.read(n)
+        self.sent += len(b)
+        self._cb(self.sent)
+        return b
+
+    def __iter__(self):
+        while True:
+            b = self.read(65536)
+            if not b:
+                return
+            yield b
+
+    def __getattr__(self, name):
+        return getattr(self._fh, name)
+
+
 class FortiAPIError(Exception):
     def __init__(self, msg: str, status: int | None = None, body: Any = None):
         super().__init__(msg)
@@ -103,6 +126,7 @@ class FortiGateClient:
     ):
         self.host = host
         self.port = port
+        self._args = (host, token, port, verify_ssl, scheme)
         self.trace = None  # optional callable(str) receiving one line per API call
         self.base = f"{scheme}://{host}:{port}"
         self._http = httpx.Client(
@@ -274,13 +298,21 @@ class FortiGateClient:
         }
         return self.request("POST", "monitor/system/firmware/upgrade", json=payload, timeout=timeout)
 
-    def upgrade_from_file_multipart(self, path, filename: str, timeout: float = 1800):
+    def clone(self, timeout: float = 10.0) -> "FortiGateClient":
+        """A separate client to the same address (used to watch the device while a long request runs)."""
+        host, token, port, verify, scheme = self._args
+        c = FortiGateClient(host, token, port=port, verify_ssl=verify, scheme=scheme, timeout=timeout)
+        c.retries = 0
+        return c
+
+    def upgrade_from_file_multipart(self, path, filename: str, timeout: float = 1800, progress=None):
         """Upload the image as a multipart file, the way the FortiOS GUI does (raw bytes, streamed
-        from disk, no base64 overhead)."""
+        from disk, no base64 overhead). progress(bytes_sent) is called as the file is read."""
         with open(path, "rb") as fh:
+            body = _Counting(fh, progress) if progress else fh
             return self.request("POST", "monitor/system/firmware/upgrade", timeout=timeout,
                                 data={"source": "upload", "filename": filename},
-                                files={"file": (filename, fh, "application/octet-stream")})
+                                files={"file": (filename, body, "application/octet-stream")})
 
     def upgrade_from_fortiguard(self, image_id: str, timeout: float = 900):
         return self.request("POST", "monitor/system/firmware/upgrade",

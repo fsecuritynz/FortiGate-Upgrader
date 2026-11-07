@@ -237,9 +237,11 @@ def _push(job: Job, c: FortiGateClient, version: str, opts: dict, dry: bool, who
                 "FortiGuard and install it. The request returns once the download has finished.")
         if not dry:
             t0 = time.time()
-            r = c.upgrade_from_fortiguard(img["id"])
-            job.detail(f"{who}: response {str(r.get('results') if isinstance(r, dict) else r)[:300]}")
-            _check_upgrade_response(r, who)
+            r = _send_and_watch(job, c, who, version, opts, lambda: c.upgrade_from_fortiguard(img["id"]),
+                                lambda: True, what="the download request")
+            if r is not None:
+                job.detail(f"{who}: response {str(r.get('results') if isinstance(r, dict) else r)[:300]}")
+                _check_upgrade_response(r, who)
             job.say(f"{who}: FortiGuard download accepted after {time.time() - t0:.0f} s")
     else:
         if src == "store":
@@ -271,9 +273,10 @@ def _push(job: Job, c: FortiGateClient, version: str, opts: dict, dry: bool, who
                     job.say(f"{who}: waiting for a free upload slot (parallel upload limit)")
                     sem.acquire()
             try:
-                r = _upload(job, c, path, fname, size, who, opts)
-                job.detail(f"{who}: response {str(r.get('results') if isinstance(r, dict) else r)[:300]}")
-                _check_upgrade_response(r, who)
+                r = _upload(job, c, path, fname, size, who, opts, version)
+                if r is not None:
+                    job.detail(f"{who}: response {str(r.get('results') if isinstance(r, dict) else r)[:300]}")
+                    _check_upgrade_response(r, who)
             finally:
                 if sem:
                     sem.release()
@@ -288,14 +291,21 @@ TOO_LARGE = ("The FortiGate refused the upload as too large (HTTP 413). Its web 
              "through the FortiGate GUI (System > Firmware & Registration) and upgrade from there.")
 
 
-def _upload(job, c: FortiGateClient, path: Path, fname: str, size: int, who: str, opts: dict):
+def _upload(job, c: FortiGateClient, path: Path, fname: str, size: int, who: str, opts: dict, version: str = ""):
     """Multipart file upload (as the GUI does); falls back to base64 JSON if the build rejects it."""
     mode = opts.get("upload_mode", "auto")
     if mode in ("auto", "multipart"):
         t0 = time.time()
         job.say(f"{who}: uploading {size / 1e6:.1f} MB to {c.base} as a file (multipart, streamed from disk) …")
+        sent = [0]
+
+        def progress(n):
+            sent[0] = n
+
         try:
-            r = c.upgrade_from_file_multipart(path, fname)
+            r = _send_and_watch(job, c, who, version, opts,
+                                lambda: c.upgrade_from_file_multipart(path, fname, progress=progress),
+                                lambda: sent[0] >= size, progress=lambda: (sent[0], size), what="the upload")
             secs = max(time.time() - t0, 0.001)
             job.say(f"{who}: upload complete in {secs:.0f} s ({size / 1e6 / secs:.1f} MB/s)")
             return r
@@ -313,7 +323,8 @@ def _upload(job, c: FortiGateClient, path: Path, fname: str, size: int, who: str
                f"(~{len(data) * 4 / 3 / 1e6:.1f} MB on the wire)")
     job.say(f"{who}: uploading to {c.base} as base64 JSON …")
     try:
-        r = c.upgrade_from_file(data, fname)
+        r = _send_and_watch(job, c, who, version, opts, lambda: c.upgrade_from_file(data, fname),
+                            lambda: time.time() - t0 > max(60, len(data) * 4 / 3 / 2e6), what="the upload")
     except FortiAPIError as e:
         if e.status == 413:
             raise RuntimeError(f"{who}: {TOO_LARGE}") from e
@@ -321,6 +332,105 @@ def _upload(job, c: FortiGateClient, path: Path, fname: str, size: int, who: str
     secs = max(time.time() - t0, 0.001)
     job.say(f"{who}: upload complete in {secs:.0f} s ({len(data) / 1e6 / secs:.1f} MB/s)")
     return r
+
+
+def _install_evidence(job, c: FortiGateClient, version: str, opts: dict) -> str | None:
+    """Signs that a FortiGate has started installing although its HTTP reply hasn't arrived:
+    the address it was sent to (or another unit of the device) stops answering because it is
+    rebooting, or reports the new version, or a unit has left the cluster."""
+    signs = []
+    try:
+        with c.clone(timeout=8) as w:
+            st = w.status()
+            if version and FosVersion.parse(st["version"]) == FosVersion.parse(version):
+                return f"{c.host} now runs {st['version']}"
+            try:
+                rows = c_ha(Ctx(client=w, vdom_mode=False), None)
+                expect = int(opts.get("_ha_units") or 0)
+                if expect > 1 and 0 < len(rows) < expect:
+                    signs.append(f"only {len(rows)} of {expect} units are in the cluster (a unit is rebooting)")
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001
+        signs.append(f"{c.host} stopped answering (rebooting)")
+    for m in opts.get("_members") or []:
+        if m.get("host") == c.host and int(m.get("port") or 443) == int(c.port):
+            continue
+        try:
+            with client_for(m, timeout=8) as w:
+                w.retries = 0
+                st = w.status()
+            if version and FosVersion.parse(st["version"]) == FosVersion.parse(version):
+                return f"{_label(m)} now runs {st['version']}"
+        except Exception:  # noqa: BLE001
+            signs.append(f"{_label(m)} stopped answering (rebooting)")
+    return "; ".join(signs) or None
+
+
+def _send_and_watch(job, c: FortiGateClient, who: str, version: str, opts: dict, call, body_sent,
+                    progress=None, what="the request"):
+    """Run the install request in the background and watch the device. FortiOS doesn't always
+    answer it (an HA primary can go straight on to upgrading the cluster), so once the request
+    has been sent, the install having visibly started counts as accepted. Returns the reply, or
+    None when the install was confirmed another way."""
+    box: dict = {}
+
+    def run():
+        try:
+            box["r"] = call()
+        except BaseException as e:  # noqa: BLE001
+            box["e"] = e
+
+    th = threading.Thread(target=run, daemon=True, name=f"install-{job.id}")
+    th.start()
+    grace = float(opts.get("install_reply_grace_s", 45))
+    give_up = float(opts.get("install_start_timeout_s", 900))
+    sent_at = None
+    next_check = 0.0
+    seen = 0
+    try:
+        while True:
+            th.join(1.0)
+            if not th.is_alive():
+                break
+            job.check_cancel()
+            now = time.time()
+            if sent_at is None:
+                if progress:
+                    n, size = progress()
+                    job.flow_note(f"{n / max(size, 1):.0%} sent · {n / 1e6:.0f} of {size / 1e6:.0f} MB")
+                if body_sent():
+                    sent_at = now
+                    next_check = now + grace
+                    job.begin_wait("the FortiGate to accept the image")
+                    job.say(f"{who}: {what} has been sent; waiting for the FortiGate to accept it")
+                continue
+            waited = now - sent_at
+            if job.skip_wait.is_set():
+                job.say(f"{who}: continuing without a reply at your request; the reboot wait confirms the install", "warn")
+                job.flow_note("you continued without a reply")
+                job._flow_attention()
+                return None
+            job.flow_note(f"sent · waiting {int(waited)}s for the FortiGate to accept it")
+            if now >= next_check:
+                next_check = now + 10
+                ev = _install_evidence(job, c, version, opts)
+                seen = seen + 1 if ev else 0
+                if ev and (seen >= 2 or "now runs" in ev):
+                    job.say(f"{who}: no reply to {what} after {int(waited)} s, but the install has started: {ev}", "ok")
+                    job.flow_note(f"install started · {ev}"[:90])
+                    return None
+                if ev:
+                    job.detail(f"{who}: possible sign the install started ({ev}); checking again")
+            if waited > give_up:
+                raise RuntimeError(f"{who}: {what} was sent {int(waited)} s ago, but the FortiGate neither answered nor "
+                                   "started installing. Check System > Firmware on the device.")
+    finally:
+        if sent_at is not None:
+            job.end_wait()
+    if "e" in box:
+        raise box["e"]
+    return box.get("r")
 
 
 def _check_upgrade_response(r, who):
@@ -828,7 +938,7 @@ def run_upgrade(job: Job, target: dict, opts: dict) -> dict:
         raise RuntimeError(f"FGCP mode must be one of {FGCP_MODES}")
     if ttype == "fgsp" and mode not in FGSP_MODES:
         raise RuntimeError(f"FGSP mode must be one of {FGSP_MODES}")
-    opts = dict(opts, ha_mode=mode)
+    opts = dict(opts, ha_mode=mode, _members=members, _ha_units=job.state.get("ha_units"))
     if ttype == "fgcp" and mode == "service-gated":
         if info.version < UPGRADE_MODE_SINCE:
             raise RuntimeError(f"Service-gated upgrades use FortiOS upgrade-mode local-only, which needs FortiOS 7.4.1 or "

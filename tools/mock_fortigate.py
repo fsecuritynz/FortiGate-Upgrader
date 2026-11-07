@@ -401,6 +401,9 @@ def make_app(state: dict) -> FastAPI:
         if state.get("break"):
             ev.append(("router", "error", "BGP neighbor status changed",
                        "BGP: %BGP-3-NOTIFICATION: neighbor 10.0.0.2 Down - hold timer expired"))
+        if state.get("no_reply"):  # seen on an HA primary: installs, but never answers the request
+            import asyncio
+            await asyncio.sleep(state["no_reply"])
         return wrap({"status": "success"})
 
     @app.get("/api/v2/monitor/system/config/backup")

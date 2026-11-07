@@ -13,7 +13,9 @@ try:
 except ImportError:  # pragma: no cover
     paramiko = None
 
-_PROMPT = re.compile(rb"[\w\-\.]+ (\([\w\-\.]+\) )?[#$] ?$")
+# "fgt #", "fgt (root) #", and in an HA cluster "fgt(Primary) #" / "fgt(Secondary) (root) #"
+PROMPT_RX = rb"[\w\-\.]+(\([\w\-\.]+\))?( \([\w\-\.]+\))? [#$] ?$"
+_PROMPT = re.compile(PROMPT_RX)
 LOGIN_SCREENS = (("new password", "forced password change (password policy or expired password)"),
                  ("password has expired", "forced password change (expired password)"),
                  ("(press 'a' to accept)", "post-login disclaimer banner"),
@@ -112,13 +114,13 @@ class FortiSSH:
         for u in units:
             t0 = time.time()
             self.chan.send(f"execute ha manage {u['index']} {username}\n")
-            got = self._wait_for(rb"password:|\(y/n\)|[\w\-\.]+ [#$] ?$", timeout)
+            got = self._wait_for(rb"password:|\(y/n\)|" + PROMPT_RX, timeout)
             if "(y/n)" in got.lower():
                 self.chan.send("y\n")
-                got = self._wait_for(rb"password:|[\w\-\.]+ [#$] ?$", timeout)
+                got = self._wait_for(rb"password:|" + PROMPT_RX, timeout)
             if "password:" in got.lower():
                 self.chan.send((password or "") + "\n")
-                got = self._wait_for(rb"[\w\-\.]+ [#$] ?$|denied|failed", timeout)
+                got = self._wait_for(PROMPT_RX + rb"|denied|failed", timeout)
                 if re.search(r"denied|failed", got, re.I):
                     raise RuntimeError(f"login to cluster unit {u['serial']} as {username} was refused")
             res = {}

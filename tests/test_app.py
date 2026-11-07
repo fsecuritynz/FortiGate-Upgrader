@@ -539,7 +539,7 @@ def test_probes_measure_outage_during_batch_upgrade():
     batch = jobs.start("batch", "b", orchestrator.run_batch, [t],
                        dict(FAST, target_version="7.4.8", source="fortiguard", run_checks=False,
                             pause_after_prechecks=False, probes=probes.normalise_all(specs),
-                            probe_baseline_s=2, probe_settle_s=1.5, probe_min_outage_ms=1500))
+                            probe_baseline_s=2, probe_settle_s=1.5, probe_min_outage_ms=1500, probe_stable_s=3))
     for _ in range(300):
         if batch.status not in ("running", "waiting"):
             break
@@ -571,7 +571,7 @@ def test_probes_on_fgcp_cluster_attribute_failover():
     batch = jobs.start("batch", "b", orchestrator.run_batch, [t],
                        dict(FAST, target_version="7.4.8", source="fortiguard", run_checks=False,
                             pause_after_prechecks=False, ha_modes={"fgcp": "uninterruptible"}, probes=specs,
-                            probe_baseline_s=1.5, probe_settle_s=1.5, probe_min_outage_ms=1500))
+                            probe_baseline_s=1.5, probe_settle_s=1.5, probe_min_outage_ms=1500, probe_stable_s=3))
     for _ in range(300):
         if batch.status not in ("running", "waiting"):
             break
@@ -1170,3 +1170,31 @@ def test_service_gate_holds_until_probes_are_stable():
     job2.answer(True)
     th.join(5)
     assert not th.is_alive()
+
+
+@pytest.mark.parametrize("source", ["store", "fortiguard"])
+def test_install_continues_when_the_fortigate_never_replies(tmp_path, source):
+    state = mock.new_state("7.4.7", reboot=2)
+    state["no_reply"] = 120  # the reply would only come after two minutes
+    port, srv = serve(state)
+    t = add_target("standalone", [port], name="quiet")
+    if source == "store":
+        img = tmp_path / "FGT_60F-v7.4.8.M-build1259-FORTINET.out"
+        img.write_bytes(b"y" * 200_000)
+        images.add(img)
+    job = Job("upgrade", "t")
+    t0 = time.time()
+    orchestrator.run_upgrade(job, t, dict(FAST, target_version="7.4.8", source=source, run_checks=False,
+                                          install_reply_grace_s=0.5))
+    srv.should_exit = True
+    assert state["version"] == "7.4.8" and time.time() - t0 < 40
+    msgs = [e["msg"] for e in job.log]
+    assert any("but the install has started" in m and ("stopped answering" in m or "now runs v7.4.8" in m) for m in msgs), msgs[-6:]
+    assert job.open_wait is None
+
+
+def test_ssh_prompt_matches_ha_role_prompts():
+    from fortiupgrade.ssh import _PROMPT
+    for p in (b"fgt-vm04-a(Primary) #", b"fgt-vm04-b(Secondary) (root) #", b"FGT-LAB #", b"fw1 (root) #", b"fgt $"):
+        assert _PROMPT.search(p + b" "), p
+    assert not _PROMPT.search(b"New Password: ")
