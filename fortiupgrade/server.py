@@ -1101,6 +1101,22 @@ def list_jobs(target_id: str = "", kind: str = "", children: bool = False, activ
     return rows
 
 
+@app.post("/api/jobs/{jid}/stop-waiting")
+def stop_waiting(jid: str):
+    """End open-ended waits (HA sync, service monitoring) of a job and its device jobs; the upgrade
+    carries on with its next step. Installs and reboots are never cut short."""
+    j = jobs.JOBS.get(jid)
+    if not j:
+        raise HTTPException(404, "job not found or not running")
+    hit = [x for x in [j] + [jobs.JOBS[c] for c in j.children if c in jobs.JOBS] if x.open_wait]
+    if not hit:
+        raise HTTPException(409, "Nothing is waiting right now: installs and reboots can't be cut short.")
+    for x in hit:
+        x.skip_wait.set()
+        x.say(f"Stop waiting requested ({x.open_wait})", "warn")
+    return {"ok": True, "stopped": [x.open_wait for x in hit]}
+
+
 @app.get("/api/jobs/{jid}")
 def get_job(jid: str, since: int = 0):
     d = _job_dict(jid, since)

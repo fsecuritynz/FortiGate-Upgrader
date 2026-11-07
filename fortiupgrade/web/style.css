@@ -489,3 +489,5 @@ table.ob-units td { vertical-align: top; } table.ob-units input[data-ua] { width
 .fd-phase .fd-track { padding: 0; flex-wrap: wrap; row-gap: 12px; }
 .fd-phase .fd-step { flex: 1 0 112px; max-width: 210px; }
 @media (max-width: 640px) { .fd-phase { grid-template-columns: 1fr; } }
+.wait-bar { display: flex; align-items: center; gap: 10px; justify-content: space-between; margin: 10px 0 0; }
+.wait-bar .spin { vertical-align: -2px; margin-right: 4px; }

@@ -32,6 +32,8 @@ class Job:
         self.created = dt.datetime.now().isoformat(timespec="seconds")
         self._cancel = threading.Event()
         self._approval = threading.Event()
+        self.skip_wait = threading.Event()  # "Stop waiting": end an open-ended wait (HA sync, service monitoring)
+        self.open_wait: str | None = None  # what the job is waiting for right now, if that wait can be stopped
         self._approved = False
         self.prompt: str | None = None
         self.state: dict = {}
@@ -46,6 +48,15 @@ class Job:
         self.probes = None  # ProbeSession while running; its summary dict once finished
         # the stages of an upgrade for the install view: [{id, label, sub, group, status, started, ended, note}]
         self.flow: list[dict] = []
+
+    # ------------------------------------------------- stoppable waits
+    def begin_wait(self, what: str):
+        self.skip_wait.clear()
+        self.open_wait = what
+
+    def end_wait(self):
+        self.open_wait = None
+        self.skip_wait.clear()
 
     # --------------------------------------------------------------- flow
     def flow_plan(self, steps: list[dict]):
@@ -87,6 +98,11 @@ class Job:
             s["started"] = s["started"] or (now if status != "skipped" else None)
         if note is not None:
             s["note"] = note
+
+    def _flow_attention(self):
+        s = next((x for x in self.flow if x["status"] in ("running", "waiting")), None)
+        if s is not None:
+            s["attention"] = True
 
     def flow_end(self, status: str, error: str | None = None):
         now = int(time.time() * 1000)
@@ -158,7 +174,7 @@ class Job:
                 "target_ids": self.target_ids or ([self.target_id] if self.target_id else []), "meta": self.meta,
                 "created": self.created, "finished": self.finished, "log": self.log[since:], "log_len": len(self.log),
                 "prompt": self.prompt, "result": self.result, "error": self.error,
-                "probes": self.probes_summary(), "flow": self.flow}
+                "probes": self.probes_summary(), "flow": self.flow, "open_wait": self.open_wait}
 
     def probes_summary(self):
         p = self.probes

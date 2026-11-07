@@ -356,27 +356,101 @@ def _tick_note(s: str) -> str:
     return f"{el} · {what}"[:90]
 
 
-def _wait_ha_sync(job: Job, m: dict, opts: dict, dry: bool, timeout: float = 900):
+def _wait_ha_sync(job: Job, m: dict, opts: dict, dry: bool, timeout: float | None = None):
+    """Wait until every unit is back in the cluster with matching configuration checksums."""
     if dry:
         return
     job.set_stage("Verifying HA sync")
-    end = time.time() + timeout
+    expect = int(job.state.get("ha_units") or 1)
+    timeout = float(timeout if timeout is not None else opts.get("ha_sync_timeout", 900))
+    t0 = time.time()
+    end = t0 + timeout
+    job.begin_wait("HA sync")
+    try:
+        _ha_sync_loop(job, m, opts, expect, t0, end, timeout)
+    finally:
+        job.end_wait()
+
+
+def _ha_sync_loop(job, m, opts, expect, t0, end, timeout):
+    last = ""
     while time.time() < end:
         job.check_cancel()
+        if job.skip_wait.is_set():
+            job.say(f"Stopped waiting for HA sync at your request ({last or 'no answer yet'})", "warn")
+            job.flow_note(f"stopped waiting · {last}")
+            job._flow_attention()
+            return
         try:
             with client_for(m) as c:
                 ha = c_ha(Ctx(client=c, vdom_mode=False), None)
-            if ha_in_sync(ha):
-                job.say(f"HA cluster in sync ({len(ha)} members)", "ok")
+            n_sync = sum(1 for r in ha if r.get("Config in sync") == "Yes")
+            if len(ha) >= expect and ha_in_sync(ha):
+                job.say(f"HA cluster in sync ({len(ha)} units)", "ok")
                 job.flow_note(f"{len(ha)} units in sync")
                 return
-            job.flow_note("waiting for the units to synchronise")
-            job.say("HA not yet in sync, waiting...", "debug")
+            last = (f"{len(ha)} of {expect} units in the cluster" if len(ha) < expect
+                    else f"{n_sync} of {len(ha)} units in sync")
+            job.flow_note(f"{int(time.time() - t0)}s · {last}")
+            job.say(f"HA: {last}, waiting...", "debug")
         except Exception as e:  # noqa: BLE001
+            last = f"no answer ({str(e)[:60]})"
+            job.flow_note(f"{int(time.time() - t0)}s · {last}")
             job.say(f"HA sync check: {e}", "debug")
-        time.sleep(float(opts.get("poll_interval", 15)))
-    job.say("HA cluster did not report in sync within the timeout. Check 'diagnose sys ha checksum cluster'.",
+        job.skip_wait.wait(float(opts.get("poll_interval", 15)))  # wakes at once on Stop waiting
+    job.say(f"HA cluster not in sync after {int(timeout)} s ({last}). Check 'diagnose sys ha checksum cluster'.",
             "warn")
+    job.flow_note(f"timed out · {last}")
+    job._flow_attention()
+
+
+def _wait_units(job: Job, target: dict, version: str, opts: dict, dry: bool):
+    """The upgrade is only complete when every unit runs the new firmware. The cluster address
+    answers on the new version as soon as an upgraded unit takes over, while the old primary is
+    still installing, so each unit is checked through its own address."""
+    units = target["members"][1:]
+    if dry or not units:
+        return
+    job.set_stage("Confirming every unit")
+    t0 = time.time()
+    end = t0 + float(opts.get("wait_timeout", 1800))
+    todo = {m["id"]: m for m in units}
+    done: list[str] = []
+    job.begin_wait("every unit on the new firmware")
+    try:
+        _units_loop(job, units, todo, done, version, opts, t0, end)
+    finally:
+        job.end_wait()
+
+
+def _units_loop(job, units, todo, done, version, opts, t0, end):
+    while todo and time.time() < end:
+        job.check_cancel()
+        if job.skip_wait.is_set():
+            job.say(f"Stopped waiting for {', '.join(_label(m) for m in todo.values())} at your request", "warn")
+            job.flow_note(f"stopped waiting · {len(done)} of {len(units)} confirmed")
+            job._flow_attention()
+            return
+        for mid, m in list(todo.items()):
+            try:
+                with client_for(m, timeout=10) as c:
+                    c.retries = 0
+                    st = c.status()
+                if FosVersion.parse(st["version"]) == FosVersion.parse(version):
+                    job.say(f"{_label(m)}: running {st['version']} build {st.get('build')}", "ok")
+                    done.append(_label(m))
+                    todo.pop(mid)
+            except Exception:  # noqa: BLE001
+                pass
+        waiting = ", ".join(_label(m) for m in todo.values())
+        job.flow_note(f"{int(time.time() - t0)}s · {len(done)} of {len(units)} on v{version}" + (f" · waiting for {waiting}" if waiting else ""))
+        if todo:
+            job.skip_wait.wait(float(opts.get("poll_interval", 15)))
+    if todo:
+        job.say(f"Not confirmed on {version} within the timeout: {', '.join(_label(m) for m in todo.values())}", "warn")
+        job._flow_attention()
+    else:
+        job.flow_note(f"all {len(units)} units on v{version}")
 
 
 # ------------------------------------------------------------------ FGCP
@@ -426,6 +500,9 @@ def _fgcp_hop(job, target, version, opts, dry, running: FosVersion):
             job.say("Uninterruptible: secondaries upgrade first, then the primary fails over and upgrades. "
                     "The cluster address drops briefly during failover.")
         _wait(job, primary, version, opts, dry)
+        if job._flow(f"units:{version}"):
+            job.flow_go(f"units:{version}")
+            _wait_units(job, target, version, opts, dry)
         job.flow_go(f"sync:{version}")
         _wait_ha_sync(job, primary, opts, dry)
         if dry:
@@ -500,7 +577,9 @@ def _flow_steps(ttype, mode, hops, opts, members, path) -> list[dict]:
         st += [{"id": f"xfer:{v}", "label": "Transfer image", "sub": src, "group": g},
                {"id": f"inst:{v}", "label": "Install and reboot", "sub": inst_sub.get(mode, "") if ttype == "fgcp" else "", "group": g}]
         if ttype == "fgcp" and mode in ("simultaneous", "uninterruptible"):
-            st.append({"id": f"sync:{v}", "label": "HA in sync", "sub": "configuration checksums match", "group": g})
+            if len(members) > 1:
+                st.append({"id": f"units:{v}", "label": "Every unit upgraded", "sub": "each unit's own address reports the new firmware", "group": g})
+            st.append({"id": f"sync:{v}", "label": "HA in sync", "sub": "every unit back, configuration checksums match", "group": g})
     if ttype == "fgcp" and opts.get("restore_ha_setting", True):
         st.append({"id": "harestore", "label": "Restore HA setting", "sub": "put the upgrade mode back"})
     if opts.get("run_checks", True):
@@ -555,6 +634,13 @@ def run_upgrade(job: Job, target: dict, opts: dict) -> dict:
     job.state["path"] = p["steps"]
     job.say(f"Upgrade path ({p.get('source')}): {' → '.join(p['steps'])}")
 
+    if info.ha_mode in ("a-p", "a-a"):
+        try:
+            from .hainfo import ha_info
+            with client_for(primary) as c:
+                job.state["ha_units"] = max(1, len(ha_info(c).get("peers") or []))
+        except Exception:  # noqa: BLE001
+            job.state["ha_units"] = max(1, len(members))
     detected = effective_type(ttype, info)
     if detected != ttype:
         job.say(f"{target['name']} is saved as {ttype}, but {info.hostname} reports "
@@ -777,22 +863,46 @@ def run_batch(job: Job, targets: list[dict], opts: dict) -> dict:
 
 
 def _settle_probes(job: Job, session, opts: dict):
-    """Keep probing after the last device finishes: a fixed settle period, extended while any
-    service is still down (up to probe_recover_s) so the outage end is captured."""
+    """Keep probing after the last device finishes: a fixed settle period, then until every
+    service has been stable (no failed probe) for probe_stable_s, at most probe_recover_s more.
+    The user can stop waiting at any time."""
     session.set_phase("settle")
-    job.set_stage("Monitoring services after the upgrade")
     settle = float(opts.get("probe_settle_s", 30))
     extra = float(opts.get("probe_recover_s", 300))
-    job.say(f"Upgrade finished; probing for another {settle:.0f} s to confirm the services are stable", src="probes")
+    stable_ms = int(float(opts.get("probe_stable_s", 20)) * 1000)
+    job.say(f"Upgrade finished; probing for another {settle:.0f} s, then until every service has been stable for "
+            f"{stable_ms // 1000} s (at most {extra:.0f} s more)", src="probes")
     end = time.time() + settle
     hard = end + extra
-    told = False
+    told = 0.0
+    job.begin_wait("services to be stable")
+    try:
+        _settle_loop(job, session, end, hard, extra, stable_ms, told)
+    finally:
+        job.end_wait()
+
+
+def _settle_loop(job, session, end, hard, extra, stable_ms, told):
     while True:
         job.check_cancel()
         now = time.time()
-        if now >= end and (session.all_up() or now >= hard):
+        bad = session.unstable(stable_ms)
+        if job.skip_wait.is_set():
+            job.say("Stopped monitoring at your request" + (f"; still unstable: {', '.join(bad)}" if bad else ""),
+                    "warn", src="probes")
             break
-        if now >= end and not told:
-            told = True
-            job.say(f"A service is still down; waiting up to {extra:.0f} s more for it to recover", "warn", src="probes")
+        if now >= end and (not bad or now >= hard):
+            if bad:
+                job.say(f"Still unstable after {extra:.0f} s: {', '.join(bad)}. Finishing; check these services.",
+                        "warn", src="probes")
+            break
+        if now < end:
+            job.stage = f"Monitoring services after the upgrade ({int(end - now)} s)"
+        else:
+            job.stage = (f"Waiting for {', '.join(bad)} to be stable for {stable_ms // 1000} s "
+                         f"(up to {int(hard - now)} s more)")
+            if now - told > 30:
+                told = now
+                job.say(f"Waiting for {', '.join(bad)} to be stable for {stable_ms // 1000} s; "
+                        f"up to {int(hard - now)} s more", "warn", src="probes")
         time.sleep(0.25)

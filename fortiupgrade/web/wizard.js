@@ -344,7 +344,11 @@ function wInstall(W, body, foot, nav, go_, c) {
     const doneN = kids.filter((k) => ["done", "failed", "cancelled"].includes(k.status)).length;
     const pct = kids.length ? Math.round(kids.reduce((a, k) => a + Math.min(stepIdx(k.stage, k.status), 5) / 5, 0) / kids.length * 100) : 0;
     $("#ih").innerHTML = `<div class="row" style="justify-content:space-between"><h2 style="margin:0">${j.status === "done" ? (W.dry ? "Simulation complete" : "Upgrade complete") : j.status === "failed" ? "Upgrade stopped" : j.status === "cancelled" ? "Upgrade cancelled" : (W.dry ? "Simulating upgrade…" : "Installing FortiOS v" + esc(W.version) + "…")}</h2>${statusBadge(j.status)}</div>
-      <div class="hint">${esc(j.stage || "")} · ${doneN}/${kids.length || ts.length} device(s) finished</div><div class="bar big"><i style="width:${j.status === "done" ? 100 : pct}%"></i></div>`;
+      <div class="hint">${esc(j.stage || "")} · ${doneN}/${kids.length || ts.length} device(s) finished</div><div class="bar big"><i style="width:${j.status === "done" ? 100 : pct}%"></i></div>
+      ${(() => { const w = [j, ...kids].filter((x) => x.open_wait && ["running", "waiting"].includes(x.status));
+        return w.length ? `<div class="banner info wait-bar"><span><span class="spin"></span> Waiting for ${w.map((x) => `<b>${esc(x.open_wait)}</b>${x.id !== j.id ? ` (${esc(x.title)})` : ""}`).join(", ")}. The upgrade itself is finished for this step; this only confirms the result.</span>
+          <button class="small" id="iStopWait">Stop waiting</button></div>` : ""; })()}`;
+    const sw = $("#iStopWait"); if (sw) sw.onclick = async () => { sw.disabled = true; try { await api(`/jobs/${W.job}/stop-waiting`, { body: {} }); toast("Stopped waiting; the upgrade carries on with its next step."); } catch (e) { toast(e.message); sw.disabled = false; } };
     if (j.prompt !== shownPrompt) {
       shownPrompt = j.prompt;
       $("#igate").innerHTML = j.prompt ? `<div class="gate"><b>${esc(j.prompt)}</b><div class="row" style="margin-top:8px"><button class="primary" id="gOk">${icon("check")}Continue</button><button id="gNo">Stop</button></div></div>` : "";

@@ -1029,3 +1029,54 @@ def test_upgrade_stage_flow_marks_failure():
     assert st["connect"]["status"] == "done" and st["xfer:7.9.9"]["status"] == "failed"
     assert "not offered by FortiGuard" in st["xfer:7.9.9"]["note"]
     assert st["inst:7.9.9"]["status"] == "pending"
+
+
+def test_fgcp_waits_for_every_unit_through_its_own_address():
+    a = mock.new_state("7.4.7", ha="a-p", reboot=1, name="fgt-a")
+    b = mock.new_state("7.4.7", ha="a-p", reboot=1, name="fgt-b", serial="FGT60FTK00000002")
+    (pa, sa), (pb, sb) = serve(a), serve(b)
+    t = add_target("fgcp", [pa, pb])
+    job = Job("u", "t")
+    # unit b never reports the new firmware: the hop is not complete, and the stage says so
+    orchestrator.run_upgrade(job, t, dict(FAST, target_version="7.4.8", source="fortiguard", ha_mode="uninterruptible",
+                                          dry_run=False, run_checks=False, wait_timeout=4, poll_interval=0.3, ha_sync_timeout=2))
+    st = {s["id"]: s for s in job.flow}
+    assert "units:7.4.8" in st and st["units:7.4.8"].get("attention") and "waiting for m1" in st["units:7.4.8"]["note"]
+    # once it does, it is confirmed
+    b["version"] = "7.4.8"
+    a["version"] = "7.4.7"
+    job = Job("u", "t")
+    orchestrator.run_upgrade(job, t, dict(FAST, target_version="7.4.8", source="fortiguard", ha_mode="uninterruptible",
+                                          dry_run=False, run_checks=False, wait_timeout=10, poll_interval=0.3, ha_sync_timeout=3))
+    st = {s["id"]: s for s in job.flow}
+    assert st["units:7.4.8"]["note"] == "all 1 units on v7.4.8" and not st["units:7.4.8"].get("attention")
+    assert st["sync:7.4.8"]["note"] == "2 units in sync"
+    sa.should_exit = sb.should_exit = True
+
+
+def test_probe_stability_and_stop_waiting():
+    from fastapi.testclient import TestClient
+
+    from fortiupgrade import probes, server
+    job = Job("batch", "t")
+    s = probes.ProbeSession([{"name": "p1", "kind": "tcp", "host": "127.0.0.1", "port": 9}], job)
+    p = s.probes[0]
+    now = probes._now_ms()
+    p.record(now - 5000, False, None, "x")
+    p.record(now - 4000, True, 1.0, "")
+    assert s.all_up() and s.unstable(10_000) == ["p1"] and s.unstable(3_000) == []
+    # Stop waiting only reaches a job that is in a stoppable wait
+    jobs.JOBS[job.id] = job
+    c = TestClient(server.app, headers={"x-auth": server.TOKEN})
+    assert c.post(f"/api/jobs/{job.id}/stop-waiting").status_code == 409
+    job.begin_wait("services to be stable")
+    assert c.post(f"/api/jobs/{job.id}/stop-waiting").json()["stopped"] == ["services to be stable"]
+    assert job.skip_wait.is_set()
+    job.end_wait()
+    assert not job.skip_wait.is_set() and job.open_wait is None
+    # the settle loop ends at once when asked
+    job.begin_wait("services to be stable")
+    job.skip_wait.set()
+    t0 = time.time()
+    orchestrator._settle_loop(job, s, time.time() + 60, time.time() + 600, 600, 20_000, 0.0)
+    assert time.time() - t0 < 1 and any("Stopped monitoring" in e["msg"] for e in job.log)

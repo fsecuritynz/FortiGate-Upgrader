@@ -326,6 +326,7 @@ class Probe:
         self.windows: list[dict] = []
         self.open: dict | None = None
         self.last_ok: int | None = None
+        self.last_fail: int | None = None
         self.last: dict = {}
         self.phases: dict[str, _Phase] = {}
         self.method = ""
@@ -350,6 +351,7 @@ class Probe:
                     self._close(t)
                 self.last_ok = t
             else:
+                self.last_fail = t
                 if not self.open:
                     self.open = {"start": t, "last_ok_before": self.last_ok, "fails": 0, "errors": Counter(),
                                  "phase": self.s.phase}
@@ -496,6 +498,13 @@ class ProbeSession:
 
     def all_up(self) -> bool:
         return all(not p.open and (p.last.get("ok") or not p.last) for p in self.probes)
+
+    def unstable(self, window_ms: int) -> list[str]:
+        """Probes that failed within the last window_ms (or are down now). Instantaneous 'up' is
+        not enough: a target that drops for a second every few seconds is up most of the time."""
+        now = _now_ms()
+        return [p.spec["name"] for p in self.probes
+                if p.open or (p.last_fail is not None and now - p.last_fail < window_ms)]
 
     def stop(self):
         if self.ended:

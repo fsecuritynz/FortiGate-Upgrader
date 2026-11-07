@@ -1,5 +1,29 @@
 [
   {
+    "version": "0.16.1",
+    "build": 27,
+    "date": "2026-11-07",
+    "title": "HA upgrade completion",
+    "changes": [
+      {
+        "type": "fixed",
+        "text": "An FGCP hop is only complete when every unit runs the new firmware. The cluster address answers on the new version as soon as an upgraded unit takes over, while the old primary is still installing; each unit with a saved address is now checked through its own address (new stage: Every unit upgraded)."
+      },
+      {
+        "type": "fixed",
+        "text": "HA in sync requires every unit to be back in the cluster with matching checksums, recognises FortiOS 7.4+/8.0's primary flag, and shows how many units are in the cluster and in sync while it waits."
+      },
+      {
+        "type": "fixed",
+        "text": "Service monitoring after the upgrade waits until every probe has been stable (no failures) for 20 s, instead of up at one instant, so a target that drops for a second every few seconds no longer keeps it waiting for the full 5 minutes without saying why. The stage names the unstable probes and the time left."
+      },
+      {
+        "type": "new",
+        "text": "Stop waiting: while an upgrade is only waiting to confirm a result (every unit on the new firmware, HA sync, services stable), the install view says what it is waiting for and lets you stop the wait. The step is marked for attention and the upgrade carries on. Installs and reboots are never cut short."
+      }
+    ]
+  },
+  {
     "version": "0.16.0",
     "build": 26,
     "date": "2026-11-07",

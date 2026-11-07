@@ -411,7 +411,8 @@ def c_ha(ctx, _):
         rows = []
     if not rows:
         return out
-    primary = next((m for m in rows if m.get("is_root_master") or m.get("is_manage_master")), rows[0])
+    primary = next((m for m in rows if m.get("is_root_primary") or m.get("is_manage_primary")
+                    or m.get("is_root_master") or m.get("is_manage_master")), rows[0])
     ref = (primary.get("checksum") or {}).get("all", "")
     for m in rows:
         cs = (m.get("checksum") or {}).get("all", "")
