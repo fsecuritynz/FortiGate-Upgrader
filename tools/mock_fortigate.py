@@ -323,6 +323,9 @@ def make_app(state: dict) -> FastAPI:
     def hacs():
         if state["ha_cfg"]["mode"] == "standalone":
             return wrap([])
+        # seen on FortiOS 7.6.8 primary with an 8.0.2 secondary: ha-checksums fails while the firmware differs
+        if state.get("hacs_500_until") and state["version"] != state["hacs_500_until"]:
+            return JSONResponse({"http_method": "GET", "status": "error", "http_status": 500}, 500)
         return wrap([{"serial_no": state["serial"], "is_root_master": 1, "checksum": {"all": "abc", "global": "g1"}},
                      {"serial_no": state["serial"][:-1] + "2", "is_root_master": 0, "checksum": {"all": "abc", "global": "g1"}}])
 

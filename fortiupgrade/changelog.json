@@ -1,5 +1,21 @@
 [
   {
+    "version": "0.17.2",
+    "build": 30,
+    "date": "2026-11-07",
+    "title": "Service-gated rejoin on mixed firmware",
+    "changes": [
+      {
+        "type": "fixed",
+        "text": "Service-gated upgrades waited up to 30 minutes after the first unit was upgraded: while the units run different firmware, the primary answers ha-checksums with HTTP 500, which the rejoin check took as 'not back yet'. Rejoin is now read from the HA peer list (then HA statistics, then checksums) on the cluster address, then on the upgraded unit's own address, then from 'get system ha status' over SSH."
+      },
+      {
+        "type": "improved",
+        "text": "Each rejoin check is logged with what it saw (e.g. '1 of 2 units in the cluster (cluster address, ha-peer)'), and after 15 minutes the upgrade asks whether to carry on instead of waiting silently."
+      }
+    ]
+  },
+  {
     "version": "0.17.1",
     "build": 29,
     "date": "2026-11-07",

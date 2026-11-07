@@ -1198,3 +1198,54 @@ def test_ssh_prompt_matches_ha_role_prompts():
     for p in (b"fgt-vm04-a(Primary) #", b"fgt-vm04-b(Secondary) (root) #", b"FGT-LAB #", b"fw1 (root) #", b"fgt $"):
         assert _PROMPT.search(p + b" "), p
     assert not _PROMPT.search(b"New Password: ")
+
+
+def test_service_gated_rejoin_when_checksums_fail_on_mixed_firmware():
+    a, b = _gated_pair()
+    a["hacs_500_until"] = "7.4.8"  # the 7.4.7 primary can't report checksums once the secondary runs 7.4.8
+    (pa, sa), (pb, sb) = serve(a), serve(b)
+    t = storage.save_target({"name": "pair", "type": "fgcp", "members": [
+        {"name": "cluster", "host": "127.0.0.1", "port": pa, "scheme": "http"},
+        {"name": "fgt-a", "host": "127.0.0.1", "port": pa, "scheme": "http"},
+        {"name": "fgt-b", "host": "127.0.0.1", "port": pb, "scheme": "http"}]}, {str(i): {"token": mock.TOKEN} for i in range(3)})
+    job = jobs.start("upgrade", "pair", orchestrator.run_upgrade, t, dict(
+        FAST, target_version="7.4.8", source="fortiguard", ha_mode="service-gated", dry_run=False, run_checks=False,
+        gate_stable_s=1, ha_sync_timeout=5, rejoin_timeout_s=20))
+    for _ in range(600):
+        if job.status != "running":
+            break
+        time.sleep(0.05)
+    sa.should_exit = sb.should_exit = True
+    assert job.status == "done", (job.error, [e["msg"] for e in job.log[-8:]])
+    st = {s["id"]: s for s in job.flow}
+    rj = st["rejoin:FGT60FTK00000002:7.4.8"]
+    assert rj["note"].startswith("back in the cluster") and not rj.get("attention"), rj
+    assert any("is back in the cluster" in e["msg"] and "ha-peer" in e["msg"] for e in job.log)
+    assert a["version"] == b["version"] == "7.4.8"
+
+
+def test_rejoin_asks_instead_of_hanging():
+    a, b = _gated_pair()
+    a["peers"] = a["peers"][:1]  # the cluster address only ever lists itself
+    b["peers"] = b["peers"][1:]
+    (pa, sa), (pb, sb) = serve(a), serve(b)
+    t = storage.save_target({"name": "pair", "type": "fgcp", "members": [
+        {"name": "cluster", "host": "127.0.0.1", "port": pa, "scheme": "http"},
+        {"name": "fgt-b", "host": "127.0.0.1", "port": pb, "scheme": "http"}]}, {str(i): {"token": mock.TOKEN} for i in range(2)})
+    job = Job("u", "t")
+    job.state["unit_map"] = {"FGT60FTK00000002": t["members"][1]}
+    job.flow_plan([{"id": "rejoin", "label": "Rejoin cluster"}])
+    job.flow_go("rejoin")
+    th = threading.Thread(target=orchestrator._wait_rejoin,
+                          args=(job, t, "FGT60FTK00000002", 2, {"rejoin_timeout_s": 1.5, "poll_interval": 0.3}, False))
+    th.start()
+    for _ in range(100):
+        if job.prompt:
+            break
+        time.sleep(0.05)
+    assert job.prompt and "hasn't been seen back in the cluster" in job.prompt and "1 of 2 units" in job.prompt
+    assert job.flow[0].get("attention")
+    job.answer(True)
+    th.join(5)
+    sa.should_exit = sb.should_exit = True
+    assert not th.is_alive() and any("Waiting for fgt-b to rejoin" in e["msg"] for e in job.log)

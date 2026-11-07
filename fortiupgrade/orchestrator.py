@@ -666,38 +666,98 @@ def _cluster_roles(target) -> tuple[str, list[dict]]:
     return st["serial"], peers
 
 
+_HA_STATUS_RX = re.compile(r"^\s*(?:Primary|Secondary|Master|Slave)\s*:\s*([^,\n]*?)\s*,\s*([A-Z0-9]{10,20})\b", re.M)
+
+
+def parse_ha_status_members(text: str) -> dict[str, str]:
+    """{serial: hostname} of the units in 'get system ha status' (Primary/Secondary lines)."""
+    return {sn: name.strip() for name, sn in _HA_STATUS_RX.findall(text or "")}
+
+
+def _serials_via_api(m: dict) -> tuple[set[str], str]:
+    """Serials of the cluster members as one address reports them. ha-checksums can fail (HTTP 500)
+    while the units run different firmware, so the HA peer list and statistics are tried first."""
+    errs = []
+    with client_for(m, timeout=10) as c:
+        c.retries = 0
+        for ep in ("system/ha-peer", "system/ha-statistics", "system/ha-checksums"):
+            try:
+                rows = c.monitor(ep) or []
+                rows = rows if isinstance(rows, list) else [rows]
+                sns = {r.get("serial_no") or r.get("serial") for r in rows if isinstance(r, dict)} - {None, ""}
+                if sns:
+                    return sns, ep.split("/")[-1]
+                errs.append(f"{ep.split('/')[-1]} empty")
+            except FortiAPIError as e:
+                errs.append(f"{ep.split('/')[-1]} HTTP {e.status}")
+    return set(), ", ".join(errs)
+
+
+def _cluster_serials(job, target: dict, unit: dict | None) -> tuple[set[str], str]:
+    """Who is in the cluster right now, and how we know: the cluster address, then the unit's own
+    address, then 'get system ha status' over SSH."""
+    tried = []
+    for who, m in (("cluster address", target["members"][0]), (_label(unit) if unit else "", unit)):
+        if not m:
+            continue
+        try:
+            sns, how = _serials_via_api(m)
+            if sns:
+                return sns, f"{who} ({how})"
+            tried.append(f"{who}: {how}")
+        except Exception as e:  # noqa: BLE001
+            tried.append(f"{who}: {str(e)[:60]}")
+    m = target["members"][0]
+    if m.get("ssh_user"):
+        try:
+            with ssh_for(m) as sh:
+                got = parse_ha_status_members(sh.run("get system ha status", timeout=30))
+            if got:
+                return set(got), "get system ha status over SSH"
+            tried.append("SSH: no Primary/Secondary lines")
+        except Exception as e:  # noqa: BLE001
+            tried.append(f"SSH: {str(e)[:60]}")
+    return set(), "; ".join(tried)
+
+
 def _wait_rejoin(job, target, serial: str, expect: int, opts: dict, dry: bool):
-    """Wait until a unit that rebooted is back in the cluster (seen by the cluster address)."""
+    """Wait until a unit that rebooted is back in the cluster. Works while the units run different
+    firmware (where ha-checksums fails); after rejoin_timeout_s it asks rather than waiting on."""
     if dry:
         job.flow_note("simulation")
         return
+    unit = (job.state.get("unit_map") or {}).get(serial)
+    who = _label(unit) if unit else serial
     t0 = time.time()
-    end = t0 + float(opts.get("wait_timeout", 1800))
-    job.begin_wait("the unit to rejoin the cluster")
+    limit = float(opts.get("rejoin_timeout_s", 900))
+    last = None
+    job.begin_wait(f"{who} to rejoin the cluster")
     try:
-        while time.time() < end:
+        while time.time() - t0 < limit:
             job.check_cancel()
             if job.skip_wait.is_set():
-                job.say("Stopped waiting for the unit to rejoin at your request", "warn")
+                job.say(f"Stopped waiting for {who} to rejoin at your request", "warn")
                 job.flow_note("stopped waiting")
                 job._flow_attention()
                 return
-            try:
-                with client_for(target["members"][0]) as c:
-                    rows = c_ha(Ctx(client=c, vdom_mode=False), None)
-                sns = {r.get("Serial number") for r in rows}
-                if serial in sns and len(rows) >= expect:
-                    job.say(f"{serial} is back in the cluster ({len(rows)} units)", "ok")
-                    job.flow_note(f"back in the cluster · {len(rows)} units")
-                    return
-                job.flow_note(f"{int(time.time() - t0)}s · {len(rows)} of {expect} units in the cluster")
-            except Exception as e:  # noqa: BLE001
-                job.flow_note(f"{int(time.time() - t0)}s · cluster address not answering ({str(e)[:50]})")
+            sns, how = _cluster_serials(job, target, unit)
+            n = len(sns)
+            if serial in sns and n >= expect:
+                job.say(f"{who} is back in the cluster: {n} units seen by the {how}", "ok")
+                job.flow_note(f"back in the cluster · {n} units ({how.split(' (')[0]})")
+                return
+            seen = (f"{n} of {expect} units in the cluster ({how})" if sns else f"no answer ({how})")
+            if seen != last:
+                job.say(f"Waiting for {who} to rejoin: {seen}")
+                last = seen
+            job.flow_note(f"{int(time.time() - t0)}s · {seen}"[:110])
             job.skip_wait.wait(float(opts.get("poll_interval", 15)))
-        job.say(f"{serial} did not rejoin the cluster in time", "warn")
-        job._flow_attention()
     finally:
         job.end_wait()
+    job._flow_attention()
+    job.flow_note(f"not seen back after {int(limit)}s · {last}"[:110])
+    job.wait_approval(f"{who} runs the new firmware but hasn't been seen back in the cluster after {int(limit // 60)} min "
+                      f"({last}). Check System > HA on the cluster. Carry on anyway?")
 
 
 def _service_gate(job, opts: dict, sid: str, before: str, dry: bool):
