@@ -1,5 +1,29 @@
 [
   {
+    "version": "0.17.0",
+    "build": 28,
+    "date": "2026-11-07",
+    "title": "Service-gated HA upgrades",
+    "changes": [
+      {
+        "type": "new",
+        "text": "New FGCP upgrade mode, Service-gated (FortiOS 7.4.1+): the app sets upgrade-mode local-only and upgrades one unit at a time through each unit's own address. Each secondary must be back on the new firmware and in the cluster, and every service probe must have had no failures for a set time (default 60 s), before the primary is upgraded. The primary's reboot is the cutover, so it only happens once services are stable."
+      },
+      {
+        "type": "new",
+        "text": "Options for the gate: how long services must be stable, how long to wait before asking you (default 15 min), and an optional go-ahead before the cutover. After the last unit the cluster must be in sync and the services stable again; the HA setting is then restored."
+      },
+      {
+        "type": "new",
+        "text": "The stage diagram shows each unit's transfer, install and rejoin, the service gates with what they are waiting for, and the cutover approval. Stop waiting works on the gates too."
+      },
+      {
+        "type": "fixed",
+        "text": "An approval asked part-way through an upgrade is shown on the stage that asked, not on the earlier Go-ahead stage."
+      }
+    ]
+  },
+  {
     "version": "0.16.1",
     "build": 27,
     "date": "2026-11-07",

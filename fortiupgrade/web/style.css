@@ -491,3 +491,4 @@ table.ob-units td { vertical-align: top; } table.ob-units input[data-ua] { width
 @media (max-width: 640px) { .fd-phase { grid-template-columns: 1fr; } }
 .wait-bar { display: flex; align-items: center; gap: 10px; justify-content: space-between; margin: 10px 0 0; }
 .wait-bar .spin { vertical-align: -2px; margin-right: 4px; }
+.gate-opts { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--rule); border-radius: 4px; background: var(--panel-head); font-size: 12.5px; }

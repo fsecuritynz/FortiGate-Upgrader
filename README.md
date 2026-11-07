@@ -118,6 +118,13 @@ The version and build (FortiOS style, e.g. `v0.10.0 build0017`) are in `fortiupg
 - **FGCP**: `simultaneous`, `uninterruptible`, `local-only` or `secondary-only`.
   - On 7.4.1+ the app sets `upgrade-mode`. Earlier builds only have `uninterruptible-upgrade`, which supports the first two.
   - The original setting is restored afterwards.
+- **FGCP service-gated** (app-controlled, FortiOS 7.4.1+): the app sets `upgrade-mode local-only` and upgrades one unit at a time through each unit's own address, so it decides when the cutover happens:
+  1. Upgrade each secondary, wait for it to come back on the new firmware and rejoin the cluster.
+  2. Hold until every service probe has had no failures for the chosen time (default 60 s). Without probes, wait that long for the cluster to settle. If services don't settle within the limit (default 15 min), ask before carrying on.
+  3. Optionally ask for your go-ahead.
+  4. Upgrade the primary. Its reboot is the cutover to the upgraded unit.
+  5. Wait for it to rejoin, the cluster to sync, and the services to be stable again.
+  - Needs the cluster address plus every unit's own address (Add device detects them). With FortiGuard download each secondary fetches its own image, so it needs its own route to FortiGuard; otherwise push a local image.
 - **FGSP**:
   - `uninterruptible`: rolling, one peer at a time, with post-checks and an approval step between peers.
   - `simultaneous`: all peers at once.

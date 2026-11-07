@@ -1080,3 +1080,93 @@ def test_probe_stability_and_stop_waiting():
     t0 = time.time()
     orchestrator._settle_loop(job, s, time.time() + 60, time.time() + 600, 600, 20_000, 0.0)
     assert time.time() - t0 < 1 and any("Stopped monitoring" in e["msg"] for e in job.log)
+
+
+def _gated_pair():
+    peers = [{"serial_no": "FGT60FTK00000001", "hostname": "fgt-a", "priority": 200, "primary": True},
+             {"serial_no": "FGT60FTK00000002", "hostname": "fgt-b", "priority": 100, "primary": False}]
+    a = mock.new_state("7.4.7", ha="a-p", reboot=1, name="fgt-a", serial="FGT60FTK00000001")
+    b = mock.new_state("7.4.7", ha="a-p", reboot=1, name="fgt-b", serial="FGT60FTK00000002")
+    for s_ in (a, b):
+        s_["peers"] = peers
+    return a, b
+
+
+def test_service_gated_fgcp_upgrades_secondary_first_and_gates_the_cutover():
+    a, b = _gated_pair()
+    (pa, sa), (pb, sb) = serve(a), serve(b)
+    t = storage.save_target({"name": "pair", "type": "fgcp", "members": [
+        {"name": "cluster", "host": "127.0.0.1", "port": pa, "scheme": "http"},
+        {"name": "fgt-a", "host": "127.0.0.1", "port": pa, "scheme": "http"},
+        {"name": "fgt-b", "host": "127.0.0.1", "port": pb, "scheme": "http"}]}, {str(i): {"token": mock.TOKEN} for i in range(3)})
+    job = jobs.start("upgrade", "pair", orchestrator.run_upgrade, t, dict(
+        FAST, target_version="7.4.8", source="fortiguard", ha_mode="service-gated", dry_run=False, run_checks=False,
+        gate_stable_s=1, ha_sync_timeout=5))
+    for _ in range(600):
+        if job.status != "running":
+            break
+        time.sleep(0.05)
+    sa.should_exit = sb.should_exit = True
+    assert job.status == "done", (job.error, [e["msg"] for e in job.log[-8:]])
+    assert a["version"] == b["version"] == "7.4.8"
+    ids = [s["id"] for s in job.flow]
+    b_sn, a_sn = "FGT60FTK00000002", "FGT60FTK00000001"
+    # secondary first, then the gate, then the primary (the cutover), then sync and a final gate
+    assert ids.index(f"inst:{b_sn}:7.4.8") < ids.index("gate:7.4.8") < ids.index(f"inst:{a_sn}:7.4.8") < ids.index("sync:7.4.8")
+    st = {s["id"]: s for s in job.flow}
+    assert all(s["status"] in ("done", "skipped") for s in job.flow), [(s["id"], s["status"]) for s in job.flow]
+    assert "primary" in st[f"inst:{a_sn}:7.4.8"]["sub"] and st["gate:7.4.8"]["note"].startswith("no probes")
+    assert st[f"rejoin:{b_sn}:7.4.8"]["note"].startswith("back in the cluster")
+    # FortiOS was put in local-only and put back afterwards
+    assert a["ha_puts"][0] == {"upgrade-mode": "local-only"} and a["ha_puts"][-1] == {"upgrade-mode": "uninterruptible"}
+
+
+def test_service_gated_needs_every_unit_address_and_741():
+    a, b = _gated_pair()
+    (pa, sa), (pb, sb) = serve(a), serve(b)
+    t = add_target("fgcp", [pa, pa])  # cluster + unit a only
+    with pytest.raises(RuntimeError, match="every unit needs its own saved address"):
+        orchestrator.run_upgrade(Job("u", "t"), t, dict(FAST, target_version="7.4.8", source="fortiguard",
+                                                        ha_mode="service-gated", dry_run=False, run_checks=False))
+    old = mock.new_state("7.2.10", ha="a-p", reboot=1)
+    po, so = serve(old)
+    t2 = add_target("fgcp", [po, po])
+    with pytest.raises(RuntimeError, match="7.4.1"):
+        orchestrator.run_upgrade(Job("u", "t"), t2, dict(FAST, target_version="7.4.8", source="fortiguard",
+                                                         ha_mode="service-gated", dry_run=False, run_checks=False))
+    sa.should_exit = sb.should_exit = so.should_exit = True
+
+
+def test_service_gate_holds_until_probes_are_stable():
+    class Fake:
+        def __init__(self):
+            self.calls = 0
+
+        def unstable(self, window_ms):
+            self.calls += 1
+            return ["Ping 172.16.1.1"] if self.calls < 4 else []
+
+    job = Job("u", "t")
+    job.flow_plan([{"id": "gate:1", "label": "Services stable"}])
+    fake = Fake()
+    t0 = time.time()
+    orchestrator._service_gate(job, {"_probe_holder": {"s": fake}, "gate_stable_s": 2, "gate_timeout_s": 30}, "gate:1", "the cutover", False)
+    assert fake.calls >= 4 and time.time() - t0 >= 2
+    assert job.flow[0]["note"].startswith("stable for 2s") and job.open_wait is None
+    # never stable: after the limit it asks before carrying on
+    job2 = Job("u", "t")
+    job2.flow_plan([{"id": "gate:1", "label": "Services stable"}])
+
+    class Never:
+        def unstable(self, w):
+            return ["Ping 172.16.1.1"]
+    th = threading.Thread(target=orchestrator._service_gate, args=(job2, {"_probe_holder": {"s": Never()}, "gate_stable_s": 1, "gate_timeout_s": 1}, "gate:1", "the cutover", False))
+    th.start()
+    for _ in range(100):
+        if job2.prompt:
+            break
+        time.sleep(0.05)
+    assert "still not stable" in job2.prompt and job2.flow[0].get("attention")
+    job2.answer(True)
+    th.join(5)
+    assert not th.is_alive()

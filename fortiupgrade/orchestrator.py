@@ -35,7 +35,7 @@ from .snapshot import take_snapshot
 from .ssh import FortiSSH
 from .version import FosVersion
 
-FGCP_MODES = ("simultaneous", "uninterruptible", "local-only", "secondary-only")
+FGCP_MODES = ("uninterruptible", "service-gated", "simultaneous", "local-only", "secondary-only")
 FGSP_MODES = ("uninterruptible", "simultaneous", "local-only")
 UPGRADE_MODE_SINCE = FosVersion(7, 4, 1)
 _IMG_RE = re.compile(r"v(\d+)\.(\d+)\.(\d+)", re.I)
@@ -479,10 +479,18 @@ def _fgcp_hop(job, target, version, opts, dry, running: FosVersion):
     first = job._flow("hamode") is not None and job._flow("hamode")["status"] == "pending"
     if first:
         job.flow_go("hamode", mode)
+    fos_mode = "local-only" if mode == "service-gated" else mode
     with client_for(primary) as c:
-        changed = _fgcp_set_mode(job, c, running, mode, dry)
+        changed = _fgcp_set_mode(job, c, running, fos_mode, dry)
+    if mode == "service-gated":
         if changed:
             job.state.setdefault("ha_restore", changed)
+        if first:
+            job.flow_set("hamode", "done" if changed else "skipped",
+                         f"upgrade-mode: {changed[1]} → local-only" if changed else "already local-only")
+        return _gated_hop(job, target, version, opts, dry)
+    if changed:
+        job.state.setdefault("ha_restore", changed)
     if first:
         job.flow_set("hamode", "done" if changed else "skipped",
                      f"{changed[0]}: {changed[1]} → {mode if changed[0] == 'upgrade-mode' else ('enable' if mode == 'uninterruptible' else 'disable')}"
@@ -521,6 +529,154 @@ def _fgcp_hop(job, target, version, opts, dry, running: FosVersion):
     else:  # local-only
         for m in sel:
             _wait(job, m, version, opts, dry)
+
+
+# ------------------------------------------------------- service-gated FGCP
+def _unit_map(job, target) -> dict:
+    """serial -> the saved address that reaches that one unit (the device's extra addresses)."""
+    if "unit_map" in job.state:
+        return job.state["unit_map"]
+    out = {}
+    for m in target["members"][1:]:
+        try:
+            with client_for(m, timeout=15) as c:
+                out[c.status()["serial"]] = m
+        except Exception as e:  # noqa: BLE001
+            job.say(f"{_label(m)}: not reachable ({e})", "warn")
+    job.state["unit_map"] = out
+    return out
+
+
+def _cluster_roles(target) -> tuple[str, list[dict]]:
+    """(primary serial, HA peers) as the cluster address reports them now."""
+    from .hainfo import ha_info
+    with client_for(target["members"][0]) as c:
+        st = c.status()
+        peers = ha_info(c).get("peers") or []
+    return st["serial"], peers
+
+
+def _wait_rejoin(job, target, serial: str, expect: int, opts: dict, dry: bool):
+    """Wait until a unit that rebooted is back in the cluster (seen by the cluster address)."""
+    if dry:
+        job.flow_note("simulation")
+        return
+    t0 = time.time()
+    end = t0 + float(opts.get("wait_timeout", 1800))
+    job.begin_wait("the unit to rejoin the cluster")
+    try:
+        while time.time() < end:
+            job.check_cancel()
+            if job.skip_wait.is_set():
+                job.say("Stopped waiting for the unit to rejoin at your request", "warn")
+                job.flow_note("stopped waiting")
+                job._flow_attention()
+                return
+            try:
+                with client_for(target["members"][0]) as c:
+                    rows = c_ha(Ctx(client=c, vdom_mode=False), None)
+                sns = {r.get("Serial number") for r in rows}
+                if serial in sns and len(rows) >= expect:
+                    job.say(f"{serial} is back in the cluster ({len(rows)} units)", "ok")
+                    job.flow_note(f"back in the cluster · {len(rows)} units")
+                    return
+                job.flow_note(f"{int(time.time() - t0)}s · {len(rows)} of {expect} units in the cluster")
+            except Exception as e:  # noqa: BLE001
+                job.flow_note(f"{int(time.time() - t0)}s · cluster address not answering ({str(e)[:50]})")
+            job.skip_wait.wait(float(opts.get("poll_interval", 15)))
+        job.say(f"{serial} did not rejoin the cluster in time", "warn")
+        job._flow_attention()
+    finally:
+        job.end_wait()
+
+
+def _service_gate(job, opts: dict, sid: str, before: str, dry: bool):
+    """Hold the upgrade until every service probe has had no failures for gate_stable_s.
+    Without probes, wait gate_stable_s so the cluster settles. If services don't settle within
+    gate_timeout_s, ask before carrying on."""
+    job.flow_go(sid)
+    stable = float(opts.get("gate_stable_s", 60))
+    limit = float(opts.get("gate_timeout_s", 900))
+    if dry:
+        job.flow_note("simulation")
+        return
+    session = (opts.get("_probe_holder") or {}).get("s")
+    t0 = time.time()
+    job.begin_wait(f"services to be stable before {before}")
+    try:
+        if session is None:
+            job.say(f"No service probes: waiting {stable:.0f} s for the cluster to settle before {before}")
+            while time.time() - t0 < stable and not job.skip_wait.is_set():
+                job.check_cancel()
+                job.flow_note(f"no probes · settling {int(stable - (time.time() - t0))}s")
+                job.skip_wait.wait(1)
+            job.flow_note(f"no probes · settled {int(time.time() - t0)}s")
+            return
+        bad: list[str] = []
+        while time.time() - t0 < limit:
+            job.check_cancel()
+            bad = session.unstable(int(stable * 1000))
+            if not bad and time.time() - t0 >= min(stable, 5):
+                job.say(f"Every service has been stable for {stable:.0f} s; continuing with {before}", "ok")
+                job.flow_note(f"stable for {stable:.0f}s after {int(time.time() - t0)}s")
+                return
+            if job.skip_wait.is_set():
+                job.say(f"Continuing with {before} at your request; still unstable: {', '.join(bad)}", "warn")
+                job.flow_note(f"you continued · unstable: {', '.join(bad)}")
+                job._flow_attention()
+                return
+            job.flow_note(f"{int(time.time() - t0)}s · waiting for {', '.join(bad) or 'a clean period'}")
+            job.skip_wait.wait(1)
+    finally:
+        job.end_wait()
+    job._flow_attention()
+    job.flow_note(f"not stable after {int(limit)}s: {', '.join(bad)}")
+    job.wait_approval(f"{', '.join(bad)} still not stable after {int(limit)} s. Continue with {before} anyway?")
+
+
+def _gated_hop(job, target, version, opts, dry):
+    """Service-gated FGCP upgrade (FortiOS upgrade-mode local-only): each secondary is upgraded
+    through its own address and must rejoin and the services must be stable before the next
+    unit. The primary goes last; its reboot is the cutover, so the app decides when it happens."""
+    units = _unit_map(job, target)
+    p_sn, peers = (job.state.get("primary_sn"), []) if dry else _cluster_roles(target)
+    if dry:
+        peers = [{"serial": s} for s in units] or [{"serial": p_sn}]
+    expect = max(int(job.state.get("ha_units") or 1), len(peers))
+    order = [p["serial"] for p in peers if p["serial"] != p_sn] + [p_sn]
+    missing = [s for s in order if s not in units]
+    if missing:
+        raise RuntimeError("Service-gated upgrades go unit by unit, so every unit needs its own saved address "
+                           f"(its management-ip or HA management interface). Missing for: {', '.join(missing)}.")
+    v = version
+    # the primary changes with every hop (the upgraded unit takes over): re-plan this hop's stages
+    opts.setdefault("_gated_orders", {})[v] = [(s, _label(units[s])) for s in order]
+    if job.state.get("plan_args"):
+        job.flow_plan(_flow_steps(*job.state["plan_args"]))
+    for sn in order:
+        m = units[sn]
+        who = _label(m)
+        is_primary = sn == p_sn
+        if is_primary:
+            _service_gate(job, opts, f"gate:{v}", "the cutover", dry)
+            if opts.get("approve_cutover"):
+                job.flow_go(f"approvecut:{v}")
+                job.wait_approval(f"The upgraded unit is back and services are stable. Upgrade {who} now? Its reboot "
+                                  "moves traffic to the upgraded unit.")
+        job.flow_go(f"xfer:{sn}:{v}")
+        with client_for(m, timeout=900) as c:
+            _push(job, c, v, opts, dry, who)
+        job.flow_go(f"inst:{sn}:{v}")
+        if is_primary:
+            job.say(f"{who} is the primary: its reboot is the cutover to the upgraded unit", "warn")
+        _wait(job, m, v, opts, dry)
+        job.flow_go(f"rejoin:{sn}:{v}")
+        _wait_rejoin(job, target, sn, expect, opts, dry)
+    job.flow_go(f"sync:{v}")
+    if not dry:
+        job.say("Both units run the new firmware; waiting for the cluster to synchronise")
+    _wait_ha_sync(job, target["members"][0], opts, dry)
+    _service_gate(job, opts, f"after:{v}", "the next step", dry)
 
 
 def _restore_ha(job, target, dry):
@@ -565,9 +721,27 @@ def _flow_steps(ttype, mode, hops, opts, members, path) -> list[dict]:
                 "simultaneous": "all units reboot together", "local-only": "selected units only",
                 "secondary-only": "secondaries only"}
     if ttype == "fgcp":
-        st.append({"id": "hamode", "label": "Set HA upgrade mode", "sub": mode})
-    for v in hops:
+        st.append({"id": "hamode", "label": "Set HA upgrade mode", "sub": "local-only (app-controlled)" if mode == "service-gated" else mode})
+    for k, v in enumerate(hops):
         g = f"v{v}"
+        # planned order: secondaries, then the primary; after each hop the upgraded unit is primary
+        order = (opts.get("_gated_orders") or {}).get(v) or list(opts.get("_gated_order") or [])
+        if order and v not in (opts.get("_gated_orders") or {}) and k % 2 == 1 and len(order) == 2:
+            order = order[::-1]
+        if ttype == "fgcp" and mode == "service-gated":
+            for i, (sn, name) in enumerate(order):
+                last = i == len(order) - 1
+                if last:
+                    st.append({"id": f"gate:{v}", "label": "Services stable", "sub": "before the cutover", "group": g})
+                    if opts.get("approve_cutover"):
+                        st.append({"id": f"approvecut:{v}", "label": "Approve cutover", "sub": "your go-ahead", "group": g})
+                role = "primary · reboot is the cutover" if last else "secondary"
+                st += [{"id": f"xfer:{sn}:{v}", "label": "Transfer image", "sub": f"{name} · {src}", "group": g},
+                       {"id": f"inst:{sn}:{v}", "label": "Install and reboot", "sub": f"{name} ({role})", "group": g},
+                       {"id": f"rejoin:{sn}:{v}", "label": "Rejoin cluster", "sub": name, "group": g}]
+            st += [{"id": f"sync:{v}", "label": "HA in sync", "sub": "configuration checksums match", "group": g},
+                   {"id": f"after:{v}", "label": "Services stable", "sub": "after the upgrade", "group": g}]
+            continue
         if ttype == "fgsp" and mode != "simultaneous":
             for m in members if mode != "local-only" else [x for x in members if x["id"] in (opts.get("member_ids") or [])]:
                 who = m.get("name") or m["host"]
@@ -655,6 +829,26 @@ def run_upgrade(job: Job, target: dict, opts: dict) -> dict:
     if ttype == "fgsp" and mode not in FGSP_MODES:
         raise RuntimeError(f"FGSP mode must be one of {FGSP_MODES}")
     opts = dict(opts, ha_mode=mode)
+    if ttype == "fgcp" and mode == "service-gated":
+        if info.version < UPGRADE_MODE_SINCE:
+            raise RuntimeError(f"Service-gated upgrades use FortiOS upgrade-mode local-only, which needs FortiOS 7.4.1 or "
+                               f"later (running {info.version}). Upgrade to 7.4.1+ with Uninterruptible first.")
+        units = _unit_map(job, target)
+        job.state["primary_sn"] = info.serial
+        try:
+            from .hainfo import ha_info as _hai
+            with client_for(primary) as c:
+                peers = _hai(c).get("peers") or []
+        except Exception:  # noqa: BLE001
+            peers = []
+        sns = [x["serial"] for x in peers if x["serial"] != info.serial] + [info.serial]
+        missing = [s for s in sns if s not in units]
+        if missing:
+            raise RuntimeError("Service-gated upgrades go unit by unit, so every unit needs its own saved address "
+                               "(its management-ip or HA management interface). No address reaches "
+                               f"{', '.join(missing)}. Add them with Edit, or use Add device to detect them.")
+        opts = dict(opts, _gated_order=[(s, _label(units[s])) for s in sns])
+    job.state["plan_args"] = (ttype, mode, hops, opts, members, p["steps"])
     job.flow_plan(_flow_steps(ttype, mode, hops, opts, members, p["steps"]))
     job.flow_set("connect", "done", " → ".join(f"v{s}" for s in p["steps"]))
 
@@ -784,9 +978,10 @@ def run_batch(job: Job, targets: list[dict], opts: dict) -> dict:
     sem = threading.Semaphore(int(opts.get("max_parallel_uploads", 4)))
     modes = opts.get("ha_modes") or {}
     children: list[Job] = []
+    holder: dict = {}  # the probe session, once started, for service-gated HA upgrades
     for t in targets:
         o = dict(opts, ha_mode=modes.get(t["type"]) or opts.get("ha_mode"), ha_modes=modes,
-                 approve_before_upgrade=True, _batch_sync=True,
+                 approve_before_upgrade=True, _batch_sync=True, _probe_holder=holder,
                  _upload_sem=sem, member_ids=(opts.get("member_ids") or {}).get(t["id"], []))
         children.append(jobs.start("upgrade", t["name"], run_upgrade, t, o, parent=job, target_id=t["id"],
                                    meta={"target_version": opts.get("target_version"), "dry_run": dry}))
@@ -800,6 +995,7 @@ def run_batch(job: Job, targets: list[dict], opts: dict) -> dict:
         session = probes.ProbeSession(opts["probes"], job, min_outage_ms=int(opts.get("probe_min_outage_ms", 1000)))
         job.probes = session
         session.start()
+        holder["s"] = session
 
     try:
         while not all(s in ("waiting", "failed", "cancelled", "done") for s in statuses()):

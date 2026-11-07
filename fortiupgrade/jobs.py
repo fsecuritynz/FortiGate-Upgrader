@@ -146,9 +146,19 @@ class Job:
         self.prompt = prompt
         self.status = "waiting"
         prev_stage, self.stage = self.stage, "Awaiting approval" if not quiet else "Waiting for the other devices"
-        if self._flow("approve"):
-            self.flow_go("approve", "waiting for the other devices" if quiet else "waiting for your approval")
-            self._flow("approve")["status"] = "waiting"
+        # show the wait on the stage it belongs to: the planned Go-ahead the first time, otherwise
+        # the stage that is running now (e.g. Approve cutover, or a gate that gave up)
+        ap = self._flow("approve")
+        gate = None
+        if ap is not None and ap["status"] == "pending":
+            self.flow_go("approve")
+            gate = ap
+        else:
+            gate = next((x for x in self.flow if x["status"] == "running"), None)
+        if gate is not None:
+            gate["status"] = "waiting"
+            gate["_before"] = gate.get("note", "")
+            gate["note"] = "waiting for the other devices" if quiet else "waiting for your approval"
         self.say(waiting_msg or f"Waiting for approval: {prompt}", "gate" if not quiet else "info")
         self._approval.clear()
         self._approval.wait()
@@ -158,8 +168,13 @@ class Job:
             raise Cancelled()
         self.status = "running"
         self.stage = prev_stage
-        if self._flow("approve") and self._flow("approve")["status"] == "waiting":
-            self.flow_set("approve", "done", "approved" if not quiet else "all devices ready")
+        if gate is not None and gate["status"] == "waiting":
+            before = gate.pop("_before", "")
+            if gate["id"] == "approve" or gate["id"].startswith("approvecut"):
+                self.flow_set(gate["id"], "done", "approved" if not quiet else "all devices ready")
+            else:  # a stage that asked part-way through carries on
+                gate["status"] = "running"
+                gate["note"] = f"{before} · you continued" if before else "you continued"
         self.say("Continuing" if quiet else "Approved, continuing", "info" if quiet else "gate")
 
     def answer(self, approve: bool):

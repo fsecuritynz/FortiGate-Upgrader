@@ -68,7 +68,7 @@ function streamJob(id, con, onTick) {
 const WSTEPS = [["devices", "Devices"], ["image", "Target image"], ["method", "Install method"], ["options", "Options"], ["health", "Config & log review"], ["review", "Pre-flight & review"], ["install", "Install"]];
 function newWizard() {
   return { step: 0, sel: new Set(S.upSel || []), version: "", build: null, maturity: null, source: "fortiguard", path: "fortinet",
-    fw: {}, ha: { fgcp: "uninterruptible", fgsp: "uninterruptible" }, units: {}, checks: true, pause: false, restore: true,
+    fw: {}, ha: { fgcp: "uninterruptible", fgsp: "uninterruptible" }, units: {}, checks: true, pause: false, restore: true, gate: { stable: 60, timeout: 900, approve: false },
     unverified: false, wait: 1800, par: 4, checkIds: null, pf: null, pfJob: null, fmgAck: false, critAck: false, job: null, dry: false, rv: null, rvJob: null, rvAck: false };
 }
 async function pUpgrade() {
@@ -221,7 +221,8 @@ function wMethod(W, body, foot, nav, go_, c) {
 
 function wOptions(W, body, foot, nav, go_) {
   const ts = wSel(), fgcp = ts.filter((t) => effType(t) === "fgcp"), fgsp = ts.filter((t) => effType(t) === "fgsp");
-  const FG = { uninterruptible: ["Uninterruptible", "Secondaries upgrade first, then the primary fails over and upgrades. Short failover, no full outage."], simultaneous: ["Simultaneous", "All units upgrade and reboot together. Fastest, causes an outage."], "local-only": ["Local only", "Only the units you select (FortiOS 7.4.1+)."], "secondary-only": ["Secondary only", "Upgrade the secondaries; the primary stays (FortiOS 7.4.1+)."] };
+  const FG = { uninterruptible: ["Uninterruptible", "Secondaries upgrade first, then the primary fails over and upgrades. Short failover, no full outage. FortiOS decides when to fail over."],
+    "service-gated": ["Service-gated", "The app upgrades one unit at a time and holds the cutover until the upgraded unit is back in the cluster and your service probes have been stable. FortiOS 7.4.1+, needs each unit's own address."], simultaneous: ["Simultaneous", "All units upgrade and reboot together. Fastest, causes an outage."], "local-only": ["Local only", "Only the units you select (FortiOS 7.4.1+)."], "secondary-only": ["Secondary only", "Upgrade the secondaries; the primary stays (FortiOS 7.4.1+)."] };
   const FS = { uninterruptible: ["Rolling", "One peer at a time, with post-checks between peers."], simultaneous: ["Simultaneous", "All peers at once."], "local-only": ["Local only", "Only the peers you select."] };
   const cards = (kind, modes, names) => `<div class="mcards small">${modes.map((m) => `<label class="mcard ${W.ha[kind] === m ? "on" : ""}"><input type="radio" name="ha-${kind}" value="${m}" ${W.ha[kind] === m ? "checked" : ""}><div><b>${names[m][0]}</b><p>${names[m][1]}</p></div></label>`).join("")}</div>`;
   const haInfo = (t) => { const i = S.inv[t.id] || {}; const n = t.members.length;
@@ -251,8 +252,17 @@ function wOptions(W, body, foot, nav, go_) {
   probeEditor(W, $("#wProbes", body));
   const units = () => ["fgcp", "fgsp"].forEach((k) => { const el = $(`[data-units=${k}]`, body); if (!el) return;
     const mode = W.ha[k], list = k === "fgcp" ? fgcp : fgsp;
-    const needUnits = k === "fgcp" && ["local-only", "secondary-only"].includes(mode) && list.filter((t) => t.members.length < 2);
-    el.innerHTML = (needUnits && needUnits.length ? `<div class="banner warn" style="margin-top:10px">${esc(needUnits.map((t) => t.name).join(", "))}: ${mode === "local-only" ? "Local only upgrades the units you pick, which needs each unit's own HA management address." : "Secondary only can't confirm the secondaries' version without their HA management addresses; the app will only wait for the cluster to settle."} Add them under Devices › Edit (see below).</div>` : "") +
+    const needUnits = k === "fgcp" && ["local-only", "secondary-only", "service-gated"].includes(mode) && list.filter((t) => t.members.length < (mode === "service-gated" ? 3 : 2));
+    el.innerHTML = (needUnits && needUnits.length ? `<div class="banner warn" style="margin-top:10px">${esc(needUnits.map((t) => t.name).join(", "))}: ${mode === "local-only" ? "Local only upgrades the units you pick, which needs each unit's own HA management address." : mode === "service-gated" ? "Service-gated upgrades each unit through its own address, so the device needs the cluster address plus every unit's own address." : "Secondary only can't confirm the secondaries' version without their HA management addresses; the app will only wait for the cluster to settle."} Add them under Devices › Edit (see below).</div>` : "") +
+      (k === "fgcp" && mode === "service-gated" ? `<div class="gate-opts">
+        <div class="hint" style="margin-bottom:6px">How it runs: set FortiOS <code>upgrade-mode local-only</code> → upgrade each secondary through its own address → wait until it is back in the cluster →
+          <b>hold until every service probe has had no failures for the time below</b> → upgrade the primary (its reboot moves traffic to the upgraded unit) → wait until it rejoins and the cluster is in sync → hold again → restore the setting.</div>
+        <div class="row" style="flex-wrap:wrap;gap:14px">
+          <label class="row">Services stable for <input id="gStable" type="number" min="5" value="${esc(W.gate.stable)}" style="width:70px"> s</label>
+          <label class="row">Give up waiting after <input id="gTimeout" type="number" min="60" value="${esc(W.gate.timeout)}" style="width:80px"> s <span class="hint">(then asks you)</span></label>
+          <label class="cb"><input type="checkbox" id="gApprove" ${W.gate.approve ? "checked" : ""}> Ask me before the cutover</label></div>
+        ${probeSpecs(W).length ? "" : '<div class="banner warn" style="margin:8px 0 0">No service probes yet: add some below (the per-unit addresses and a host behind the cluster), or the gate can only wait a fixed time.</div>'}
+        <div class="hint" style="margin-top:6px">With <b>Download from FortiGuard</b> each secondary downloads its own image, so it needs its own route to FortiGuard; otherwise use <b>Push a local image</b>.</div></div>` : "") +
       (mode === "local-only" ? list.map((t) => `<div style="margin-top:8px"><b>${esc(t.name)}:</b> ${t.members.map((m, n) => `<label class="cb"><input type="checkbox" data-unit="${t.id}:${m.id}" ${(W.units[t.id] || []).includes(m.id) ? "checked" : ""}> ${esc(m.name || m.host)} <span class="hint">${n === 0 ? "(cluster address)" : "(unit address)"}</span></label>`).join("")}</div>`).join("") : "");
     $$("[data-unit]", el).forEach((x) => x.onchange = () => { const [t, m] = x.dataset.unit.split(":"); const a = new Set(W.units[t] || []); x.checked ? a.add(m) : a.delete(m); W.units[t] = [...a]; }); });
   ["fgcp", "fgsp"].forEach((k) => $$(`input[name=ha-${k}]`, body).forEach((r) => r.onchange = () => { W.ha[k] = r.value; $$(`input[name=ha-${k}]`, body).forEach((x) => x.closest(".mcard").classList.toggle("on", x.checked)); units(); W.pf = null; }));
@@ -264,7 +274,8 @@ function wOptions(W, body, foot, nav, go_) {
   nav(true, true);
   $("#wNext").onclick = () => {
     W.checks = $("#oChecks").checked; W.pause = $("#oPause").checked; W.restore = $("#oRestore").checked; W.unverified = $("#oUnver").checked;
-    W.wait = Number($("#oWait").value) || 1800; W.par = Number($("#oPar").value) || 4; W.checkIds = $$("[data-chk]", body).filter((x) => x.checked).map((x) => x.dataset.chk);
+    W.wait = Number($("#oWait").value) || 1800; W.par = Number($("#oPar").value) || 4;
+    if ($("#gStable")) W.gate = { stable: Math.max(5, Number($("#gStable").value) || 60), timeout: Math.max(60, Number($("#gTimeout").value) || 900), approve: $("#gApprove").checked }; W.checkIds = $$("[data-chk]", body).filter((x) => x.checked).map((x) => x.dataset.chk);
     const lo = [...(W.ha.fgcp === "local-only" ? fgcp : []), ...(W.ha.fgsp === "local-only" ? fgsp : [])];
     if (lo.some((t) => !(W.units[t.id] || []).length)) return toast("Select the units to upgrade for local-only mode.");
     const pe = probeValidate(W); if (pe) return toast(pe);
@@ -279,7 +290,8 @@ function wBody(W, dry) {
     approve_between_members: W.pause, restore_ha_setting: W.restore, allow_unverified_path: W.unverified, wait_timeout: W.wait, max_parallel_uploads: W.par,
     check_ids: W.checkIds, fmg_acknowledged: W.fmgAck, preflight_job: W.pfJob, review_job: W.rvJob,
     probes: probeSpecs(W), probe_baseline_s: W.probeOpts?.baseline ?? 15, probe_settle_s: W.probeOpts?.settle ?? 60,
-    probe_min_outage_ms: W.probeOpts?.minOutage ?? 1000 };
+    probe_min_outage_ms: W.probeOpts?.minOutage ?? 1000,
+    gate_stable_s: W.gate?.stable ?? 60, gate_timeout_s: W.gate?.timeout ?? 900, approve_cutover: !!W.gate?.approve };
 }
 
 function wReview(W, body, foot, nav, go_, c) {
