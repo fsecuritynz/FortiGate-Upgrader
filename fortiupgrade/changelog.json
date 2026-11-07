@@ -1,5 +1,29 @@
 [
   {
+    "version": "0.15.0",
+    "build": 25,
+    "date": "2026-11-07",
+    "title": "Guided Add device",
+    "changes": [
+      {
+        "type": "new",
+        "text": "Create New opens a guided Add device: enter any management address and the API token, and the app connects (read-only) and detects whether it is a standalone unit, an FGCP cluster or an FGSP peer."
+      },
+      {
+        "type": "new",
+        "text": "For an FGCP cluster it recognises whether the address is the shared cluster address or one unit's own address (management-ip or dedicated HA management interface), lists every unit with its role, priority and serial, suggests the cluster address, and fills in each unit's own address (the other unit's read over SSH when SSH credentials are given)."
+      },
+      {
+        "type": "new",
+        "text": "Check addresses confirms the cluster address reaches the primary and each unit address reaches that unit (by serial number). The device can't be saved until the cluster address checks out; missing or failed unit addresses ask for confirmation."
+      },
+      {
+        "type": "fixed",
+        "text": "Enter details manually keeps the token and SSH password typed in the guided form."
+      }
+    ]
+  },
+  {
     "version": "0.14.0",
     "build": 24,
     "date": "2026-11-07",

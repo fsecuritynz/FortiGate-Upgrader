@@ -38,6 +38,7 @@ const ICON = {
   plus: '<path d="M12 5v14M5 12h14"/>', edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/>', trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
   maximize: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>', minimize: '<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>',
   eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>',
   refresh: '<path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/>', upload: '<path d="M12 16V4M7 9l5-5 5 5M4 20h16"/>', folder: '<path d="M3 6h7l2 2h9v11H3z"/>',
   import: '<path d="M12 4v12M7 11l5 5 5-5M4 20h16"/>',
   cloud: '<path d="M7 18h10a4 4 0 0 0 .5-8 6 6 0 0 0-11.5 1.5A3.3 3.3 0 0 0 7 18z"/><path d="M12 11v6M9.5 14.5 12 17l2.5-2.5"/>', play: '<path d="M7 4l12 8-12 8z"/>', check: '<path d="M5 12l5 5L20 7"/>',
@@ -185,7 +186,7 @@ async function pDevices() {
   };
   const upd = () => { $("#edit").disabled = sel.size !== 1; $("#del").disabled = !sel.size; $("#upg").disabled = !sel.size; };
   $("#q").oninput = draw;
-  $("#new").onclick = () => editTarget();
+  $("#new").onclick = () => addDevice();
   $("#edit").onclick = () => editTarget(JSON.parse(JSON.stringify(S.targets.find((t) => sel.has(t.id)))));
   $("#del").onclick = async () => { if (!confirm(`Delete ${sel.size} device(s)? Snapshots are kept.`)) return; for (const id of sel) await api(`/targets/${id}`, { method: "DELETE" }); await loadTargets(); pDevices(); };
   $("#upg").onclick = () => { S.upSel = new Set(sel); go("upgrade"); };
@@ -212,9 +213,9 @@ function memberRow(m = {}, i = 0, type = "standalone", tid = "") {
       <div class="field">Name<input name="name" value="${esc(m.name || "")}" placeholder="fw01"></div>
       <div class="field">IP / FQDN<input name="host" value="${esc(m.host || "")}" required></div>
       <div class="field">HTTPS port<input name="port" type="number" value="${esc(m.port || 443)}"></div>
-      <div class="field">REST API token ${m.has_token ? "(stored — blank keeps it)" : ""}<div class="tok-in"><input name="token" type="password" autocomplete="off">${m.has_token && tid && m.id ? `<button type="button" class="small" data-showtok="${esc(tid)}|${esc(m.id)}" title="Show the stored token">${icon("eye")}Show</button>` : ""}</div><div class="tok-show" hidden></div></div>
+      <div class="field">REST API token ${m.has_token ? "(stored — blank keeps it)" : ""}<div class="tok-in"><input name="token" type="password" autocomplete="off" value="${esc(m.token || "")}">${m.has_token && tid && m.id ? `<button type="button" class="small" data-showtok="${esc(tid)}|${esc(m.id)}" title="Show the stored token">${icon("eye")}Show</button>` : ""}</div><div class="tok-show" hidden></div></div>
       <div class="field">SSH user (optional)<input name="ssh_user" value="${esc(m.ssh_user || "")}"></div>
-      <div class="field">SSH password ${m.has_ssh ? "(stored)" : ""}<input name="ssh_password" type="password" autocomplete="off"></div>
+      <div class="field">SSH password ${m.has_ssh ? "(stored)" : ""}<input name="ssh_password" type="password" autocomplete="off" value="${esc(m.ssh_password || "")}"></div>
       <div class="field">SSH port<input name="ssh_port" type="number" value="${esc(m.ssh_port || 22)}"></div>
       <div class="field">Protocol<select name="scheme"><option ${m.scheme !== "http" ? "selected" : ""}>https</option><option ${m.scheme === "http" ? "selected" : ""}>http</option></select></div>
     </div><label class="cb"><input type="checkbox" name="verify_ssl" ${m.verify_ssl ? "checked" : ""}> Verify TLS certificate</label></div>`;

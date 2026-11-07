@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import __build__, __version__, version_string
 from . import hainfo, images, jobs, notes_cache, orchestrator, probes, release_notes, storage
-from .client import FortiAPIError
+from .client import FortiGateClient, FortiAPIError
 from .checks import Ctx, c_ha, c_interfaces, c_license, c_resources, is_vm, physical_ports, vm_series
 from .version import FosVersion
 from .checks import CHECKS
@@ -763,6 +763,63 @@ def cluster_units(t: dict, refresh: bool = False) -> dict:
         u["own"] = [{"addr": a["addr"], "kind": a["kind"], "access": a["access"]}
                     for a in hainfo.unit_addresses(u["mgmt"], u["ha_mode"] in ("a-p", "a-a"), u.get("dedicated"))]
     _UNITS[t["id"]] = (time.time(), out)
+    return out
+
+
+@app.post("/api/onboard/detect")
+def onboard_detect(body: dict = Body(...)):
+    """Add device: connect to one address with the token typed in (nothing is saved), and work out
+    what it is and every address the device should be saved with. For an FGCP cluster: the shared
+    cluster address and each unit's own address (this unit's from its interfaces; the others' read
+    over SSH from this unit with `execute ha manage`, when SSH credentials are given). Read-only."""
+    host, token = (body.get("host") or "").strip(), (body.get("token") or "").strip()
+    if not host or not token:
+        raise HTTPException(400, "enter the address and the REST API token")
+    port, scheme = int(body.get("port") or 443), body.get("scheme") or "https"
+    try:
+        with FortiGateClient(host, token, port=port, verify_ssl=bool(body.get("verify_ssl")), scheme=scheme, timeout=15) as c:
+            info = c.discover()
+            mgmt = hainfo.mgmt_info(c)
+            ha = hainfo.ha_info(c) if info.ha_mode in ("a-p", "a-a") else {"peers": [], "ha_mgmt_interfaces": []}
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"Could not connect to {host}:{port}: {e}") from e
+    ded = [x["interface"] for x in ha.get("ha_mgmt_interfaces") or [] if x.get("interface")]
+    out = {"host": host, "port": port, "hostname": info.hostname, "serial": info.serial, "model": info.model,
+           "version": str(info.version), "build": info.version.build, "ha_mode": info.ha_mode, "fgsp": bool(info.fgsp),
+           "admin_sport": mgmt.get("admin_sport", 443), "dedicated": ded,
+           "address": hainfo.classify_address(host, mgmt, info.ha_mode, ded), "type": "standalone", "units": [], "notes": []}
+    if info.ha_mode not in ("a-p", "a-a"):
+        out["type"] = "fgsp" if info.fgsp else "standalone"
+        return out
+    out["type"] = "fgcp"
+    out["ha"] = {k: ha.get(k) for k in ("group_name", "group_id", "override", "hbdev", "monitor", "session_pickup")}
+    others: dict[str, list[dict]] = {}
+    if len(ha.get("peers") or []) > 1 and body.get("ssh_user"):
+        try:
+            from .ssh import FortiSSH
+            with FortiSSH(body.get("ssh_host") or host, body["ssh_user"], body.get("ssh_password"),
+                          port=int(body.get("ssh_port") or 22), timeout=15) as sh:
+                got = sh.ha_peer_show(body["ssh_user"], body.get("ssh_password"), ["show system interface"])
+            for sn, cmds in got.items():
+                m2 = {"admin_sport": mgmt.get("admin_sport", 443),
+                      "interfaces": hainfo.parse_interfaces(cmds.get("show system interface", ""))}
+                others[sn] = hainfo.unit_addresses(m2, True, ded)
+        except Exception as e:  # noqa: BLE001
+            out["notes"].append(f"Could not read the other unit over SSH: {e}")
+    for p in ha.get("peers") or [{"serial": info.serial, "hostname": info.hostname, "priority": ha.get("priority"), "primary": True}]:
+        if p["serial"] == info.serial:
+            own, src = hainfo.unit_addresses(mgmt, True, ded), "this unit"
+        elif p["serial"] in others:
+            own, src = others[p["serial"]], "read over SSH"
+        else:
+            own, src = [], None
+        out["units"].append({"serial": p["serial"], "hostname": p.get("hostname") or "", "priority": p.get("priority"),
+                             "primary": bool(p.get("primary")), "this": p["serial"] == info.serial, "source": src,
+                             "own": [{"addr": a["addr"], "kind": a["kind"], "https": "https" in (a.get("access") or [])} for a in own]})
+    if len(out["units"]) < 2:
+        out["notes"].append("The cluster reports only one unit. Check the heartbeat links before upgrading.")
+    if any(not u["own"] for u in out["units"]) and not body.get("ssh_user") and len(out["units"]) > 1:
+        out["notes"].append("Add SSH credentials and detect again to have the other unit's own address filled in, or type it.")
     return out
 
 

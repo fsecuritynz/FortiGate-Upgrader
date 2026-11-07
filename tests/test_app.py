@@ -953,3 +953,34 @@ def test_overview_reads_each_ha_unit_through_its_own_address(monkeypatch):
     ov = cl.get(f"/api/targets/{t['id']}/overview", headers=H).json()
     assert not ov["units"][1]["ok"] and ov["units"][1]["hostname"] == "fgt-b" and "no address of its own" in ov["unit_notes"][0]
     srva.should_exit = srvb.should_exit = True
+
+
+def test_onboard_detect_cluster_and_unit_addresses():
+    from fastapi.testclient import TestClient
+
+    from fortiupgrade import server
+    from fortiupgrade.hainfo import classify_address
+    peers = [{"serial_no": "FGVM04TM26000001", "hostname": "fgt-a", "priority": 200, "primary": True},
+             {"serial_no": "FGVM04TM26000002", "hostname": "fgt-b", "priority": 100, "primary": False}]
+    st = mock.new_state("7.6.8", ha="a-p", name="fgt-a", serial="FGVM04TM26000001")
+    st["peers"] = peers
+    st["if_extra"] = {"port1": {"ip": "10.8.8.21 255.255.255.0", "management-ip": "127.0.0.1 255.255.255.0"}}
+    port, srv = serve(st)
+    cl, H = TestClient(server.app), {"x-auth": server.TOKEN}
+    # entered unit A's own address: recognised, cluster address suggested, A's own address filled in
+    d = cl.post("/api/onboard/detect", headers=H, json={"host": "127.0.0.1", "port": port, "scheme": "http", "token": mock.TOKEN}).json()
+    assert d["type"] == "fgcp" and d["address"]["role"] == "unit" and d["address"]["cluster_host"] == "10.8.8.21"
+    a, b = d["units"]
+    assert a["this"] and a["primary"] and a["own"][0]["addr"] == "127.0.0.1" and not b["own"] and b["hostname"] == "fgt-b"
+    assert any("SSH" in n for n in d["notes"])
+    assert cl.post("/api/onboard/detect", headers=H, json={"host": "127.0.0.1", "port": port, "scheme": "http", "token": "bad"}).status_code == 502
+    assert cl.post("/api/onboard/detect", headers=H, json={"host": "127.0.0.1"}).status_code == 400
+    srv.should_exit = True
+    # the classifier on its own: cluster address, dedicated HA management interface, standalone, unknown
+    mg = {"interfaces": [{"name": "port1", "ip": "10.8.8.21", "management_ip": "", "access": ["https", "ping"], "status": "up"},
+                         {"name": "port4", "ip": "10.9.9.19", "management_ip": "", "access": ["https"], "status": "up"}]}
+    assert classify_address("10.8.8.21", mg, "a-p", ["port4"])["role"] == "cluster"
+    r = classify_address("10.9.9.19", mg, "a-p", ["port4"])
+    assert r["role"] == "unit" and "dedicated" in r["kind"] and r["cluster_host"] == "10.8.8.21"
+    assert classify_address("10.8.8.21", mg, "standalone", [])["role"] == "device"
+    assert classify_address("fw.example.com", mg, "a-p", ["port4"])["role"] == "unknown"

@@ -226,3 +226,33 @@ def parse_interfaces(show: str) -> list[dict]:
                     "status": "down" if get("status") == "down" else "up", "type": get("type"),
                     "admin": bool(ADMIN_ACCESS & set(access))})
     return ifs
+
+
+# ------------------------------------------------------------- onboarding
+def classify_address(host: str, mgmt: dict, ha_mode: str, dedicated: list[str]) -> dict:
+    """What an address typed into Add device is: the shared cluster address, one unit's own
+    address (management-ip or dedicated HA management interface), a standalone unit's address,
+    or unknown (FQDN, NAT)."""
+    ha = ha_mode in ("a-p", "a-a")
+    ded = set(dedicated or [])
+    for i in mgmt.get("interfaces") or []:
+        if host and host == i.get("management_ip"):
+            return {"role": "unit", "kind": f"management-ip on {i['name']}", "interface": i["name"], "cluster_host": i.get("ip")}
+        if host and host == i.get("ip"):
+            if ha and i["name"] in ded:
+                return {"role": "unit", "kind": f"dedicated HA management interface {i['name']}", "interface": i["name"],
+                        "cluster_host": cluster_candidate(mgmt, ded)}
+            return {"role": "cluster" if ha else "device", "kind": f"interface {i['name']}", "interface": i["name"],
+                    "cluster_host": i["ip"] if ha else None}
+    return {"role": "unknown", "kind": "not an interface address on the unit (FQDN or NAT?)", "interface": None,
+            "cluster_host": cluster_candidate(mgmt, ded) if ha else None}
+
+
+def cluster_candidate(mgmt: dict, dedicated) -> str | None:
+    """Best guess at the shared cluster address: an up interface with HTTPS admin access that
+    isn't a dedicated HA management interface (one with a management-ip first)."""
+    ded = set(dedicated or [])
+    c = [i for i in mgmt.get("interfaces") or [] if i.get("ip") and i["name"] not in ded and i.get("status") != "down"
+         and "https" in (i.get("access") or [])]
+    c.sort(key=lambda i: (not i.get("management_ip"), i["name"]))
+    return c[0]["ip"] if c else None
